@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from 'react';
 import {
   Activity, Cpu, MemoryStick, HardDrive, GitBranch, GitCommitHorizontal, GitMerge, ChevronRight,
-  AlertTriangle, Gavel, Bot, X, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2,
+  AlertTriangle, Gavel, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2,
 } from 'lucide-react';
 import type { Board, Card, St, Decision } from './types';
 import TaskMap from './Map';
@@ -56,8 +56,7 @@ function Meter({ icon, label, value, pct }: { icon: ReactNode; label: string; va
   );
 }
 
-function TopBar({ b, conn }: { b: Board; conn: Conn }) {
-  const s = b.sys;
+function TopBar({ b, conn, view, setView }: { b: Board; conn: Conn; view: string; setView: (v: string) => void }) {
   return (
     <header className="top">
       <div className="brand">
@@ -72,11 +71,10 @@ function TopBar({ b, conn }: { b: Board; conn: Conn }) {
         <span>{conn === 'live' ? '实时' : conn === 'retry' ? '重连中' : '连接中'}</span>
         <time>北京时间 {b.now.slice(0, 16)}</time>
       </div>
-      <div className="meters">
-        <Meter icon={<Cpu size={13} />} label="负载" value={`${s.load[0].toFixed(2)} / ${s.cores} 核`} pct={s.load[0] / s.cores * 100} />
-        <Meter icon={<MemoryStick size={13} />} label="内存" value={`${s.memUsed} / ${s.memTotal} G`} pct={s.memUsed / (s.memTotal || 1) * 100} />
-        <Meter icon={<HardDrive size={13} />} label="磁盘" value={`${s.diskPct}%`} pct={s.diskPct} />
-      </div>
+      <nav className="page-tabs" aria-label="看板视图">
+        {([['agents', '人与产出', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />]] as const).map(([k, l, icon]) =>
+          <button key={k} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{icon}{l}</button>)}
+      </nav>
     </header>
   );
 }
@@ -187,63 +185,6 @@ function Working({ cards, now, open }: { cards: Card[]; now: string; open: (k: s
 
 /* ---------- 待拍板 ---------- */
 const KIND: Record<string, string> = { you: '要你定', hark: 'Hark 验收', note: '备注', block: '卡点' };
-function Decisions({ cards, open }: { cards: Card[]; open: (k: string) => void }) {
-  const [view, setView] = useState<'need' | 'all'>('need');
-  const activeCards = cards.filter(c => !['accepted', 'shelved'].includes(c.st));
-  const archived = cards.filter(c => ['accepted', 'shelved'].includes(c.st)).reduce((a, c) => a + c.decisions.length, 0);
-  const all = activeCards.map(c => ({ c, ds: c.decisions.map(d => ({ ...d, kind: c.st === 'blocked' && d.kind !== 'you' && d.kind !== 'note' ? 'block' : d.kind })) })).filter(x => x.ds.length);
-  const youN = all.reduce((a, x) => a + x.ds.filter(d => d.kind === 'you').length, 0);
-  const harkN = all.reduce((a, x) => a + x.ds.filter(d => d.kind === 'hark').length, 0);
-  const items = (view === 'need' ? all.map(x => ({ ...x, ds: x.ds.filter(d => d.kind === 'you' || d.kind === 'block') })).filter(x => x.ds.length) : all)
-    .sort((a, b) => ORDER.indexOf(a.c.st) - ORDER.indexOf(b.c.st));
-  return (
-    <section className="panel decisions">
-      <div className="ph">
-        <h2><Gavel size={16} />待你拍板</h2>
-        <small>要你定 {youN}</small>
-        <div className="seg" role="tablist">
-          <button role="tab" aria-selected={view === 'need'} className={view === 'need' ? 'on' : ''} onClick={() => setView('need')}>需处理</button>
-          <button role="tab" aria-selected={view === 'all'} className={view === 'all' ? 'on' : ''} onClick={() => setView('all')}>全部</button>
-        </div>
-      </div>
-      <div className="dlist">
-        {items.map(x => (
-          <button key={x.c.key} className="dgroup" onClick={() => open(x.c.key)}>
-            <div className="dg-h"><span className="cid">{x.c.sprint === 'wiring' ? '第 1 批' : x.c.sprint === 'parity' ? '第 2 批' : x.c.sprint === 'fix' ? '第 4 批' : '第 3 批'} · {x.c.id}</span><span className="dg-t">{shortTitle(x.c)}</span><Pill st={x.c.st} small /></div>
-            {x.ds.slice(0, 3).map((d, i) => (
-              <div key={i} className="ditem"><span className={`tag k-${d.kind}`}>{KIND[d.kind]}</span><Html className="clamp2" html={inline(d.text)} /></div>
-            ))}
-            {x.ds.length > 3 && <div className="more">还有 {x.ds.length - 3} 条</div>}
-          </button>
-        ))}
-        {!items.length && <div className="empty">没有需要你处理的事项。</div>}
-      </div>
-      <div className="foot"><Archive size={13} />{view === 'need' ? `Hark 验收 ${harkN} 条由 Hark 处理，已收起；` : ''}已验收或搁置卡的 {archived} 条已归档</div>
-    </section>
-  );
-}
-
-/* ---------- 卡住了 ---------- */
-function Blocked({ cards, now, open }: { cards: Card[]; now: string; open: (k: string) => void }) {
-  const list = cards.filter(c => c.st === 'blocked' || c.st === 'rejected');
-  return (
-    <section className="panel blocked">
-      <div className="ph"><h2><AlertTriangle size={16} />卡住了</h2><small>{list.length} 张</small></div>
-      {list.map(c => (
-        <button key={c.key} className="brow" onClick={() => open(c.key)}>
-          <span className="cid">{c.id}</span>
-          <div>
-            <div className="bt">{shortTitle(c)}<Pill st={c.st} small /></div>
-            <Html className="why clamp2" html={inline(c.decisions[0]?.text || (c.last !== '暂无汇报' ? c.last : '') || '没有写明原因，也没有汇报')} />
-            <div className="bmeta">{c.assignee || '未指派'} · 最近更新 {short(c.stamp)}（{ago(c.stamp, now)}）</div>
-          </div>
-        </button>
-      ))}
-      {!list.length && <div className="empty">没有卡住的任务。</div>}
-    </section>
-  );
-}
-
 /* ---------- 冲刺：合并路线 + 任务列表 ---------- */
 function Stage({ st }: { st: St }) {
   const idx = stageIndex(st);
@@ -365,6 +306,127 @@ function Drawer({ c, now, close, open }: { c: Card; now: string; close: () => vo
   );
 }
 
+/* ---------- 左栏：需要你 ---------- */
+const BATCH: Record<string, string> = { wiring: '第 1 批', parity: '第 2 批', h: '第 3 批', fix: '第 4 批' };
+function RailSection({ icon, title, n, tone, children, empty }: { icon: ReactNode; title: string; n: number; tone: string; children: ReactNode; empty: string }) {
+  return (
+    <section className={`rsec t-${tone}`}>
+      <h3>{icon}<span>{title}</span><b>{n}</b></h3>
+      {n ? children : <p className="rempty">{empty}</p>}
+    </section>
+  );
+}
+function NeedYou({ b, open }: { b: Board; open: (k: string) => void }) {
+  const live = b.cards.filter(c => !['accepted', 'shelved'].includes(c.st));
+  const asking = live.filter(c => c.questions?.length);
+  const stuck = live.filter(c => c.needsAttention && !c.questions?.length);
+  const decide = live.map(c => ({ c, ds: c.decisions.filter(d => d.kind === 'you') })).filter(x => x.ds.length);
+  const review = live.filter(c => c.st === 'review');
+  const total = asking.length + stuck.length + decide.length + review.length;
+  const [showAll, setShowAll] = useState(false);
+  const reasonOf = (c: Card) => (c.runReason || c.decisions[0]?.text || (c.last !== '暂无汇报' ? c.last : '') || '没有写明原因')
+    .replace(/^commit\s+\S+\s*\|\s*/, '').replace(/\s*\d{2}-\d{2} \d{2}:\d{2}\s*$/, '');
+  const stuckGroups: { reason: string; cs: Card[] }[] = [];
+  for (const c of stuck) {
+    const reason = reasonOf(c);
+    const g = stuckGroups.find(x => x.reason === reason && x.cs[0].st === c.st);
+    if (g) g.cs.push(c); else stuckGroups.push({ reason, cs: [c] });
+  }
+  stuckGroups.sort((x, y) => y.cs.length - x.cs.length);
+  return (
+    <aside className="rail rail-l" aria-label="需要你处理">
+      <div className="rail-h"><Inbox size={16} /><h2>需要你</h2><b className={total ? 'hot' : ''}>{total}</b></div>
+      <RailSection icon={<MessageCircleQuestion size={14} />} title="等你回答" n={asking.reduce((a, c) => a + (c.questions?.length || 0), 0)} tone="ask" empty="没有 Agent 在等你回答">
+        {asking.map(c => c.questions!.map(q => (
+          <button key={c.key + q.id} className="ritem ask" onClick={() => open(c.key)}>
+            <div className="ri-h"><span className="cid">{c.id}</span><span className="ri-t">{shortTitle(c)}</span><span className="ri-q">{q.id}</span></div>
+            <p>{q.text}</p>
+            {q.options.length > 0 && <div className="opts">{q.options.map(o => <span key={o}>{o}</span>)}</div>}
+            <div className="ri-m">{q.who || c.executor || c.assignee} · {q.time.slice(5, 16)}</div>
+          </button>
+        )))}
+      </RailSection>
+      <RailSection icon={<AlertTriangle size={14} />} title="卡住或失败" n={stuck.length} tone="bad" empty="没有卡住的任务">
+        {stuckGroups.slice(0, showAll ? 99 : 4).map(g => (
+          <div key={g.reason + g.cs[0].key} className="ritem">
+            <div className="ri-h">
+              {g.cs.length === 1
+                ? <button className="ri-link" onClick={() => open(g.cs[0].key)}><span className="cid">{g.cs[0].id}</span><span className="ri-t">{shortTitle(g.cs[0])}</span></button>
+                : <span className="ri-t">{g.cs.length} 张同一原因</span>}
+              <Pill st={g.cs[0].st} small />
+            </div>
+            <Html className="clamp2 ri-p" html={inline(g.reason)} />
+            {g.cs.length > 1 && <div className="chips mini">{g.cs.map(c => <button key={c.key} onClick={() => open(c.key)} title={c.title}><span className="cid">{c.id}</span></button>)}</div>}
+          </div>
+        ))}
+        {stuckGroups.length > 4 && <button className="rmore" onClick={() => setShowAll(!showAll)}>{showAll ? '收起' : `还有 ${stuckGroups.length - 4} 组`}</button>}
+      </RailSection>
+      <RailSection icon={<Gavel size={14} />} title="要你拍板" n={decide.reduce((a, x) => a + x.ds.length, 0)} tone="you" empty="没有要你定的事">
+        {decide.map(({ c, ds }) => (
+          <button key={c.key} className="ritem" onClick={() => open(c.key)}>
+            <div className="ri-h"><span className="cid">{BATCH[c.sprint] || c.sprint} · {c.id}</span><span className="ri-t">{shortTitle(c)}</span></div>
+            {ds.slice(0, 2).map((d, i) => <Html key={i} className="clamp2 ri-p" html={inline(d.text)} />)}
+            {ds.length > 2 && <div className="ri-m">还有 {ds.length - 2} 条</div>}
+          </button>
+        ))}
+      </RailSection>
+      <RailSection icon={<CircleCheckBig size={14} />} title="待验收" n={review.length} tone="rev" empty="没有待验收的卡">
+        <div className="chips">{review.map(c => <button key={c.key} onClick={() => open(c.key)} title={c.title}><span className="cid">{c.id}</span>{shortTitle(c)}</button>)}</div>
+      </RailSection>
+    </aside>
+  );
+}
+
+/* ---------- 右栏：现场 ---------- */
+function LiveRail({ b, open }: { b: Board; open: (k: string) => void }) {
+  const s = b.sys;
+  const slots = b.dispatch?.slots || 3;
+  const running = b.cards.filter(c => c.latestRun?.state === 'running');
+  const queued = b.cards.filter(c => c.dispatch === 'queued' || c.dispatch === 'answered');
+  const raw = b.cards.flatMap(c => c.reports.filter(r => r.time).map(r => ({ c, r })))
+    .sort((x, y) => y.r.time.localeCompare(x.r.time));
+  const feed: { cs: Card[]; r: Card['reports'][number] }[] = [];
+  for (const { c, r } of raw) {
+    const prev = feed[feed.length - 1];
+    if (prev && prev.r.time.slice(0, 16) === r.time.slice(0, 16) && prev.r.text === r.text) { if (!prev.cs.includes(c)) prev.cs.push(c); }
+    else if (prev && prev.cs[0] === c && prev.cs.length === 1 && prev.r.time.slice(0, 13) === r.time.slice(0, 13)) continue;
+    else if (feed.length < 14) feed.push({ cs: [c], r });
+  }
+  return (
+    <aside className="rail rail-r" aria-label="现场">
+      <section className="rsec">
+        <h3><ListOrdered size={14} /><span>调度槽位</span><b>{running.length} / {slots}</b></h3>
+        <div className="slots">{Array.from({ length: Math.max(slots, running.length) }, (_, i) => {
+          const c = running[i];
+          return c ? <button key={i} className="slot on" onClick={() => open(c.key)}><i /><span className="cid">{c.id}</span><span className="slot-a">{c.latestRun?.agent || c.assignee}</span></button>
+            : <div key={i} className="slot"><i />空闲</div>;
+        })}</div>
+        <p className="rnote">{queued.length ? `排队 ${queued.length} 张：${queued.map(c => c.id).join('、')}` : '队列为空'}</p>
+      </section>
+      <section className="rsec">
+        <h3><Gauge size={14} /><span>服务器</span></h3>
+        <div className="meters">
+          <Meter icon={<Cpu size={13} />} label="负载" value={`${s.load[0].toFixed(2)} / ${s.cores} 核`} pct={s.load[0] / s.cores * 100} />
+          <Meter icon={<MemoryStick size={13} />} label="内存" value={`${s.memUsed} / ${s.memTotal} G`} pct={s.memUsed / (s.memTotal || 1) * 100} />
+          <Meter icon={<HardDrive size={13} />} label="磁盘" value={`${s.diskUsed} / ${s.diskTotal} G`} pct={s.diskPct} />
+        </div>
+      </section>
+      <section className="rsec grow">
+        <h3><Activity size={14} /><span>最新动态</span></h3>
+        <ol className="rfeed">
+          {feed.map(({ cs, r }, i) => (
+            <li key={cs[0].key + i}><button onClick={() => open(cs[0].key)}>
+              <div><time>{r.time.slice(5, 16)}</time><span className="cid">{cs.length > 1 ? `${cs[0].id} 等 ${cs.length} 张` : cs[0].id}</span></div>
+              <Html className="clamp2" html={inline(r.text)} />
+            </button></li>
+          ))}
+          {!feed.length && <li className="rempty">还没有汇报</li>}
+        </ol>
+      </section>
+    </aside>
+  );
+}
+
 /* ---------- 页面 ---------- */
 export default function App() {
   const { board, conn, error } = useBoard();
@@ -386,9 +448,11 @@ export default function App() {
   const current = openKey ? byKey.get(openKey) : undefined;
   return (
     <div className="app">
-      <TopBar b={board} conn={conn} />
+      <TopBar b={board} conn={conn} view={view} setView={setView} />
       {board.errors.length > 0 && <div className="errors">{board.errors.map(e => <p key={e}><AlertTriangle size={14} />{e}</p>)}</div>}
-      <nav className="page-tabs" aria-label="看板视图"><button className={view === 'agents' ? 'on' : ''} aria-current={view === 'agents' ? 'page' : undefined} onClick={() => setView('agents')}><Bot size={16} />Agent 产出</button><button className={view === 'tasks' ? 'on' : ''} aria-current={view === 'tasks' ? 'page' : undefined} onClick={() => setView('tasks')}><Layers size={16} />任务地图</button><button className={view === "progress" ? "on" : ""} aria-current={view === "progress" ? "page" : undefined} onClick={() => setView("progress")}><Clock size={16} />项目进程</button></nav>{board.cards.some(c => c.needsAttention) && <section className="attention-bar" aria-label="需要处理的节点"><AlertTriangle size={16} /><b>需要处理 {board.cards.filter(c => c.needsAttention).length} 个节点</b><div>{board.cards.filter(c => c.needsAttention).map(c => <button key={c.key} onClick={() => { setView("tasks"); setFocus(c.key); setTab(c.sprint); document.querySelector(".mapp")?.scrollIntoView(); }}>{c.id} · {c.latestRun ? RUN_STATE[c.latestRun.state] : LABEL[c.st]}</button>)}</div></section>}
+      <div className="cols">
+        <NeedYou b={board} open={setOpen} />
+        <main className="center">
       {view === 'agents' ? <Agents board={board} jump={card => {
         const target = board.cards.find(c => c.key === card || c.id === card);
         setView('tasks'); if (target) { setFocus(target.key); setTab(target.sprint); setOpen(target.key); }
@@ -398,14 +462,11 @@ export default function App() {
         <Working cards={board.cards} now={board.now} open={setOpen} />
       </div>
       <TaskMap b={board} open={setOpen} focus={focus} setFocus={setFocus} />
-      <div className="main">
-        <SprintPanel b={board} tab={tab} setTab={setTab} filter={filter} setFilter={setFilter} open={setOpen} now={board.now} />
-        <div className="side">
-          <Decisions cards={board.cards} open={setOpen} />
-          <Blocked cards={board.cards} now={board.now} open={setOpen} />
-        </div>
-      </div>
+      <SprintPanel b={board} tab={tab} setTab={setTab} filter={filter} setFilter={setFilter} open={setOpen} now={board.now} />
       </>}
+        </main>
+        <LiveRail b={board} open={setOpen} />
+      </div>
       <footer>只读看板 · 数据来自任务卡与 git · 有变化时自动推送 · 北京时间（UTC+8）</footer>
       {current && <Drawer c={current} now={board.now} close={close} open={setOpen} />}
     </div>

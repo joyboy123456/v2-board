@@ -116,7 +116,35 @@ def card_json(c):
         decisions=[dict(text=t, kind=decision_kind(t)) for t in c['decisions']],
         bench=benchmark(d['title'], c['body'])[0], benchBrands=benchmark(d['title'], c['body'])[1],
         body=c['body'], progress='' if c['legacy'] else c['progress'], legacy=c['legacy'],
+        dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
+        questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
     )
+
+
+Q_SECTION = re.compile(r'^## (待回答|回答)\s*$\n(.*?)(?=^## |\Z)', re.M | re.S)
+Q_ITEM = re.compile(r'^- \[(Q\d+)\] (.*)$', re.M)
+
+
+def open_questions(body):
+    """Questions an agent asked through board-ask that nobody answered yet."""
+    asked, answered = {}, set()
+    for head, text in Q_SECTION.findall(body or ''):
+        for qid, line in Q_ITEM.findall(text):
+            if head == '待回答':
+                parts = [x.strip() for x in line.split(' | ')]
+                opts = next((x[3:].split(' / ') for x in parts if x.startswith('选项：')), [])
+                rest = [x for x in parts if not x.startswith('选项：')]
+                asked[qid] = dict(id=qid, time=rest[0] if rest else '', who=rest[1] if len(rest) > 2 else '', text=rest[-1] if rest else line, options=opts)
+            else:
+                answered.add(qid)
+    return [q for k, q in asked.items() if k not in answered]
+
+
+def dispatch_slots():
+    try:
+        return int(json.loads(Path(os.environ.get('DISPATCH_CONFIG', '/etc/v2-dispatch.json')).read_text()).get('slots', 3))
+    except (OSError, ValueError, AttributeError):
+        return int(os.environ.get('DISPATCH_SLOTS', '3'))
 
 
 def needs_attention(status, c):
@@ -225,6 +253,7 @@ def snapshot():
                  sprints=[dict(id=s, name=SPRINT_NAMES.get(s, s), desc=SPRINT_DESC.get(s, ''), count=sum(c['sprint'] == s for c in items)) for s in sprints])
     version = hashlib.sha1(json.dumps(board, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
     board['version'] = version
+    board['dispatch'] = dict(slots=dispatch_slots())
     return board
 
 

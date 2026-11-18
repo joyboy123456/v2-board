@@ -17,7 +17,9 @@ export interface Card {
   last: string; stamp: string; stampFromFile: boolean; source: string;
   reports: Report[]; commits: Commit[]; gitNote: string; baseline: string;
   decisions: Decision[]; body: string; progress: string; legacy: boolean;
+  dispatch?: string; executor?: string; questions?: Question[];
 }
+export interface Question { id: string; time: string; who: string; text: string; options: string[] }
 
 export interface Sys { load: number[]; cores: number; memUsed: number; memTotal: number; diskUsed: number; diskTotal: number; diskPct: number }
 export interface Sprint { id: string; name: string; desc: string; count: number }
@@ -25,5 +27,5 @@ export interface Sprint { id: string; name: string; desc: string; count: number 
 export interface Link { from: string; to: string; inferred: boolean; note: string }
 
 export interface Board {
-  timeline: Milestone[]; summary: { review_today: number; accepted_today: number; review_total: number; accepted_total: number }; links: Link[]; cards: Card[]; errors: string[]; sprints: Sprint[]; version: string; now: string; sys: Sys;
+  timeline: Milestone[]; summary: { review_today: number; accepted_today: number; review_total: number; accepted_total: number }; links: Link[]; cards: Card[]; errors: string[]; sprints: Sprint[]; version: string; now: string; sys: Sys; dispatch?: { slots: number };
 }

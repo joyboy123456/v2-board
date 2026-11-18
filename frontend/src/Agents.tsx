@@ -43,6 +43,7 @@ function useAgentFeed() {
         if (revision.current === requestedRevision) { setData(a); setRuns(r); } setEvents(old => mergeBySeq(old, e).slice(-200)); setError('');
       }).catch(() => { if (mounted) setError('产出数据读取失败，正在重试'); });
     };
+    refresh(); // do not depend on SSE opening: some proxies buffer the stream
     es.onopen = refresh;
     es.onerror = () => setConnection('retry');
     es.addEventListener('resync', refresh);
@@ -154,7 +155,7 @@ export default function Agents({ board, jump }: { board: Board; jump: (card: str
         <div className="agent-totals"><span><b>{a.totals.commits}</b> 提交</span><span><b>{a.totals.changed_files}</b> 文件</span><span><b>{a.totals.completed_cards}</b> 已验收卡</span><span>{a.success_rate == null ? '—' : `${Math.round(a.success_rate * 100)}%`} 成功率</span></div>
       </button>;
     })}</section>
-    <section className="panel activity-panel"><div className="ph"><h2>最新动态</h2><small>北京时间 · 提交 / 推送 / 执行 / 卡状态</small></div><ol className="activity-feed">{recent.map(e => {
+    <section className="panel activity-panel"><div className="ph"><h2>执行记录</h2><small>北京时间 · 提交 / 推送 / 执行 / 卡状态</small></div><ol className="activity-feed">{recent.map(e => {
       const card = board.cards.find(c => c.key === e.card || c.id === e.card);
       return <li key={e.id}><time>{cst(e.occurred_at || e.ts)}</time><span className={`activity-kind ${e.type.replace(':', '-')}`}>{ACT[e.type]}</span><div>{e.card && <button className="dep" onClick={() => jump(card?.key || e.card!)}>{e.card}</button>} <strong>{e.subject || e.summary || e.branch}</strong><small>{e.agent || e.branch || ''} {e.sha?.slice(0, 8)} {STATE[e.state || ''] || CARD_STATE[e.state || ''] || ''}{e.backfilled ? ' · 历史回填' : ''}</small></div></li>;
     })}</ol>{!recent.length && <p className="empty">新的执行、提交和推送会自动出现在这里</p>}{!showAll && recent.length >= 15 && <button className="dep feed-more" onClick={() => setShowAll(true)}>显示更多动态</button>}</section>
