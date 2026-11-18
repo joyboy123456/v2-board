@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""board-dispatch: what a person (or Hark) does to dispatched cards.
+
+  board-dispatch answer <card> <Q1> "<answer>"   answer a question; the agent resumes
+  board-dispatch queue  <card> [--executor X]    put a card in the queue (or re-queue a failed one)
+  board-dispatch hold   <card>                   pause: the dispatcher leaves it alone
+  board-dispatch close  <card>                   accepted or dropped: off the person list
+  board-dispatch status                          what needs a person, what runs, what waits
+"""
+import argparse, json, os, subprocess, sys
+from pathlib import Path
+here = Path(__file__).resolve()
+sys.path[:0] = [str(here.parents[1] / 'dispatcher'), '/usr/local/lib/v2-board']
+import cards
+
+board = os.environ.get('V2_BOARD_DIR', os.environ.get('BOARD_ROOT', '/srv/v2-wiring-board'))
+p = argparse.ArgumentParser()
+sub = p.add_subparsers(dest='cmd', required=True)
+s = sub.add_parser('answer'); s.add_argument('card'); s.add_argument('qid'); s.add_argument('answer')
+s = sub.add_parser('queue'); s.add_argument('card'); s.add_argument('--executor')
+s = sub.add_parser('hold'); s.add_argument('card')
+s = sub.add_parser('close'); s.add_argument('card')
+sub.add_parser('status')
+a = p.parse_args()
+
+if a.cmd == 'status':
+    sys.exit(subprocess.call([sys.executable, str(here.parents[1] / 'dispatcher' / 'dispatcher.py'), 'status']))
+path = cards.find(board, a.card)
+if not path:
+    sys.exit(f'board-dispatch: 找不到卡片 {a.card}.md')
+if a.cmd == 'answer':
+    try:
+        cards.add_answer(path, a.qid.upper(), ' '.join(a.answer.split()))
+    except KeyError:
+        sys.exit(f'board-dispatch: {a.card} 没有问题 {a.qid}')
+    meta, _ = cards.read(path)
+    print(f"{a.card} {a.qid.upper()} 已回答，调度状态：{meta.get('dispatch')}")
+elif a.cmd == 'queue':
+    values = dict(dispatch='queued')
+    if a.executor:
+        values['executor'] = a.executor
+    cards.update(path, **values)
+    print(f'{a.card} 已排队')
+else:
+    cards.update(path, dispatch='held' if a.cmd == 'hold' else 'closed')
+    print(f'{a.card} -> {"held" if a.cmd == "hold" else "closed"}')

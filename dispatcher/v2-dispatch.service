@@ -1,0 +1,18 @@
+[Unit]
+Description=v2-dispatch resident agent dispatcher
+After=network-online.target
+
+[Service]
+Environment=DISPATCH_CONFIG=/etc/v2-dispatch.json
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+ExecStart=/usr/bin/python3 /opt/v2-board/dispatcher/dispatcher.py run
+# Agents run in their own sessions: stopping or restarting the dispatcher must not kill them.
+KillMode=process
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

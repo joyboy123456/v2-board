@@ -1,0 +1,143 @@
+{
+  "board": "/srv/v2-wiring-board",
+  "state": "/var/lib/v2-dispatch",
+  "slots": 3,
+  "min_free_mem_gb": 4,
+  "poll_seconds": 5,
+  "run_timeout_seconds": 21600,
+  "agent_run": "/usr/local/bin/agent-run",
+  "worktree_root": "/root/wt",
+  "link": [
+    "node_modules"
+  ],
+  "executors": {
+    "codex-astra": {
+      "agent": "Codex gpt-6.2-astra high",
+      "cmd": [
+        "/root/codex-next/node_modules/.bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.2-astra",
+        "-c",
+        "model_reasoning_effort=high",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "{prompt}"
+      ],
+      "resume": [
+        "/root/codex-next/node_modules/.bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.2-astra",
+        "-c",
+        "model_reasoning_effort=high",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "resume",
+        "{session}",
+        "{prompt}"
+      ]
+    },
+    "codex-astra-xhigh": {
+      "agent": "Codex gpt-6.2-astra xhigh",
+      "cmd": [
+        "/root/codex-next/node_modules/.bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.2-astra",
+        "-c",
+        "model_reasoning_effort=xhigh",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "{prompt}"
+      ],
+      "resume": [
+        "/root/codex-next/node_modules/.bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.2-astra",
+        "-c",
+        "model_reasoning_effort=xhigh",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "resume",
+        "{session}",
+        "{prompt}"
+      ]
+    },
+    "codex-sol": {
+      "agent": "Codex gpt-6.1-sol",
+      "cmd": [
+        "/root/.local/bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.1-sol",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "{prompt}"
+      ],
+      "resume": [
+        "/root/.local/bin/codex",
+        "exec",
+        "-m",
+        "gpt-6.1-sol",
+        "-s",
+        "danger-full-access",
+        "--skip-git-repo-check",
+        "--json",
+        "-o",
+        "{final}",
+        "resume",
+        "{session}",
+        "{prompt}"
+      ]
+    },
+    "claude-fable": {
+      "agent": "Claude Code fable-5-2",
+      "cmd": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--model",
+        "claude-fable-5-2",
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "stream-json",
+        "--verbose"
+      ],
+      "resume": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--resume",
+        "{session}",
+        "--model",
+        "claude-fable-5-2",
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "stream-json",
+        "--verbose"
+      ]
+    }
+  }
+}

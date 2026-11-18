@@ -5,6 +5,7 @@
 - 前端：Vite + React + TypeScript + lucide-react，暗色界面
 - 后端：Python FastAPI，只读 Markdown 与 git，SSE 推送实时更新
 - 附带 `agent-run` / `board-report` 两个脚本，让 Codex、Claude Code 等 Agent 自己把开始、进度、结束汇报到看板
+- `dispatcher/`：常驻调度器 v2-dispatch，排队、并发槽位、提问回流与同会话续跑，见 dispatcher/README.md
 
 快速开始：
 

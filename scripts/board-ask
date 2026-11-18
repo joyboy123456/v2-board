@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""board-ask <card> "<question>" [--option A --option B]
+An agent asks a person one concrete question, then ends its turn.
+The question lands in the card's "## 待回答" section, the card's dispatch state
+becomes asking, and the board shows it under 待你拍板. When someone answers
+(board-dispatch answer), v2-dispatch resumes the same agent session."""
+import argparse, os, subprocess, sys
+from pathlib import Path
+here = Path(__file__).resolve()
+sys.path[:0] = [str(here.parents[1] / 'dispatcher'), '/usr/local/lib/v2-board']
+import cards
+
+p = argparse.ArgumentParser()
+p.add_argument('card'); p.add_argument('question')
+p.add_argument('--option', action='append', default=[])
+p.add_argument('--agent', default=os.environ.get('BOARD_AGENT', ''))
+a = p.parse_args()
+board = os.environ.get('V2_BOARD_DIR', os.environ.get('BOARD_ROOT', '/srv/v2-wiring-board'))
+path = cards.find(board, a.card)
+if not path:
+    sys.exit(f'board-ask: 找不到卡片 {a.card}.md')
+qid = cards.add_question(path, ' '.join(a.question.split()), a.option, a.agent)
+report = here.with_name('board-report')
+try:
+    subprocess.run([str(report) if report.exists() else 'board-report', a.card, '受阻', f'等待回答 {qid}：{a.question[:200]}', '--agent', a.agent or 'agent'], timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except Exception:
+    pass
+print(f'{a.card} {qid} 已提交。现在结束本轮，回答到了会在同一会话里唤醒你。')
