@@ -1,0 +1,9 @@
+# Optional private Git access. Only the host agent socket and public trust file are mounted.
+services:
+  v2-board:
+    environment:
+      SSH_AUTH_SOCK: /run/board-ssh-agent
+      GIT_SSH_COMMAND: ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/board-known-hosts
+    volumes:
+      - ${BOARD_SSH_AUTH_SOCK:?Set BOARD_SSH_AUTH_SOCK to a host SSH agent socket}:/run/board-ssh-agent:ro
+      - ${BOARD_SSH_KNOWN_HOSTS:?Set BOARD_SSH_KNOWN_HOSTS to a readable known_hosts file}:/run/board-known-hosts:ro

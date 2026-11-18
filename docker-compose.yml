@@ -1,0 +1,27 @@
+services:
+  v2-board:
+    build: .
+    image: v2-board:local
+    ports:
+      - "${BOARD_BIND:-127.0.0.1}:${BOARD_PORT:-3161}:3160"
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      V2_CONTAINER: "1"
+      V2_HOST_PID_CHECK: "0"
+      V2_BOARD_DIR: /srv/v2-wiring-board
+      V2_REPO_DIR: /srv/v0-ai
+      V2_MIRROR_DIR: /var/lib/v2-board
+      V2_FETCH_ENABLED: "${V2_FETCH_ENABLED:-1}"
+    volumes:
+      - ${BOARD_DATA:-/srv/v2-wiring-board}:/srv/v2-wiring-board:rw
+      - ${BOARD_REPO:-/srv/v0-ai}:/srv/v0-ai:ro
+      - mirror:/var/lib/v2-board
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3160/api/board', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+volumes:
+  mirror:

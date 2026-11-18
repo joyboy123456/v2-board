@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { mergeBySeq, contiguousSeq } from '../frontend/src/run-stream.ts';
+const live = [{ seq: 3 }, { seq: 4 }];
+assert.equal(contiguousSeq(live), 0);
+const replay = [{ seq: 1 }, { seq: 2 }, { seq: 3 }];
+const first = mergeBySeq(live, replay);
+assert.deepEqual(first.map(m => m.seq), [1, 2, 3, 4]);
+assert.equal(contiguousSeq(first), 4);
+assert.deepEqual(mergeBySeq(first, [{ seq: 4 }, { seq: 5 }]).map(m => m.seq), [1, 2, 3, 4, 5]);
+assert.equal(contiguousSeq([{ seq: 1 }, { seq: 3 }]), 1);
+console.log('PASS: live/replay overlap, gaps, reconnect deduplication');

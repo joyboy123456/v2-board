@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""board-report <card> <status> "<summary>" [--agent NAME] [--repo DIR]
+Agents call this when they finish or get blocked, to self-report to the V2 dev board (:3142).
+- Updates the card's front matter status/updated in /srv/v2-wiring-board/**/<card>.md
+- Appends a line to the "## 汇报" section of <card>-progress.md (the dashboard shows the last one)
+status: 进行中/开始 | 待验收/开发完成 | 受阻/失败/超时 | 已验收 | 退回  (or the English enum)"""
+from pathlib import Path
+import sys
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'backend'), '/usr/local/lib/v2-board']
+from signals import event, message, update_run, root, now as iso_now, redact
+import argparse, fcntl, os, re, subprocess, datetime, zoneinfo, glob, sys
+ROOT = str(root())
+MAP = [(r"退回|驳回|rejected", "rejected"), (r"已验收|验收通过|accepted", "accepted"),
+       (r"待验收|开发完成|review", "review"), (r"受阻|阻塞|失败|超时|blocked", "blocked"),
+       (r"进行|开始|开工|in_progress", "in_progress"), (r"已指派|assigned", "assigned")]
+p = argparse.ArgumentParser()
+p.add_argument("card"); p.add_argument("status", nargs="?", default="进行中"); p.add_argument("summary", nargs="?", default="")
+p.add_argument("--progress"); p.add_argument("--step", type=int); p.add_argument("--total", type=int)
+p.add_argument("--agent", default=os.environ.get("BOARD_AGENT", "agent"))
+p.add_argument("--repo", default=os.getcwd())
+a = p.parse_args()
+run_id = os.environ.get('BOARD_RUN_ID')
+if a.progress is not None:
+    if not run_id:
+        p.error('--progress 需要 agent-run 提供 BOARD_RUN_ID')
+    progress = dict(summary=redact(a.progress)[:300], step=a.step, total=a.total)
+    update_run(ROOT, run_id, dict(progress=progress, current_activity=progress['summary']))
+    message(ROOT, run_id, 'progress', progress['summary'], step=a.step, total=a.total)
+    event(ROOT, 'run:progress', run_id=run_id, card=a.card, agent=a.agent, **progress)
+    sys.exit(0)
+enum = next((e for pat, e in MAP if re.search(pat, a.status)), None)
+def git(*args):
+    try: return subprocess.run(["nice", "-n", "19", "git", "-c", f"safe.directory={a.repo}", "-C", a.repo, *args], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception: return ""
+commit = git("log", "-1", "--format=%h")
+now = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S CST")
+cards = [c for c in glob.glob(f"{ROOT}/**/{a.card}.md", recursive=True)]
+if not cards: sys.exit(f"board-report: 找不到卡片 {a.card}.md（在 {ROOT} 下）")
+card = cards[0]
+summ = redact(" ".join(a.summary.split()))
+line = f"- {now} | {a.agent} | commit `{commit or '-'}` | 【{a.status}】{summ}\n"
+with open(card, "r+", encoding="utf-8") as f:
+    fcntl.flock(f, fcntl.LOCK_EX); t = f.read()
+    old_status_match = re.search(r'^status:\s*[\"\']?([\w]+)', t, re.M)
+    old_status = old_status_match.group(1) if old_status_match else ''
+    if enum: t = re.sub(r'^status:.*$', f'status: "{enum}"', t, count=1, flags=re.M)
+    t = re.sub(r'^updated:.*$', f'updated: "{now}"', t, count=1, flags=re.M)
+    f.seek(0); f.truncate(); f.write(t)
+prog = card[:-3] + "-progress.md"
+with open(prog, "a+", encoding="utf-8") as f:
+    fcntl.flock(f, fcntl.LOCK_EX); f.seek(0); t = f.read()
+    heads = re.findall(r'^#{1,6}\s+(.+)$', t, re.M)
+    if not heads or heads[-1].strip() != "汇报":
+        t = t.rstrip("\n") + "\n\n## 汇报\n"
+    t = t.rstrip("\n") + "\n" + line
+    f.seek(0); f.truncate(); f.write(t)
+print(f"reported {a.card} -> {enum or '(状态不变)'}: {line.strip()}")
+
+# Keep legacy progress while also publishing immutable machine-readable signals.
+try:
+    event(ROOT, 'card:status' if enum and old_status != enum else 'card:report', card=a.card, agent=a.agent, state=enum, previous_state=old_status, summary=summ, sha=commit, run_id=run_id)
+    with open(Path(ROOT) / 'BOARD.md', 'a+', encoding='utf-8') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        existing = f.read()
+        if '## 自动汇报（Agent 钩子）' not in existing:
+            f.write('\n\n## 自动汇报（Agent 钩子）\n')
+        f.write(f'- {now} | {a.card} | {a.agent} | commit `{commit or "-"}` | 【{a.status}】{summ}\n')
+except Exception as error:
+    print(f'board-report signal: {type(error).__name__}', file=sys.stderr)

@@ -1,0 +1,16 @@
+.git
+.venv
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/*.log
+.env*
+!.env.example
+**/.ssh
+**/*credentials*
+**/*secret*
+design
+tests
+shot.mjs
+ovf.mjs

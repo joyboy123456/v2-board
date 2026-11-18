@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""agent-run CARD AGENT WORKDIR [FINAL=path] -- command ..."""
+import sys
+from pathlib import Path
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'backend'), '/usr/local/lib/v2-board']
+import codecs
+import os
+import re
+import shutil
+import selectors
+import signal
+import subprocess
+import time
+import uuid
+from signals import now, root, normalize, update_run, event, message, parse_line, redact
+
+
+def git(wd, *args):
+    try:
+        p = subprocess.run(['nice', '-n', '19', 'git', '-c', f'safe.directory={wd}', '-C', wd, *args], capture_output=True, text=True, timeout=5)
+        return p.stdout.strip() if p.returncode == 0 else ''
+    except Exception:
+        return ''
+
+
+def safe(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except Exception as error:
+        # Collection must never change the child exit status.
+        print('agent-run signal:', type(error).__name__, file=sys.stderr)
+
+
+def report(card, status, summary, wd, env):
+    try:
+        local = Path(__file__).resolve().with_name('board-report')
+        subprocess.run(['nice', '-n', '19', str(local) if local.exists() else 'board-report', card, status, summary, '--repo', wd], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        pass
+
+
+def main():
+    if len(sys.argv) < 5:
+        print(__doc__, file=sys.stderr)
+        return 2
+    card, agent, wd, *cmd = sys.argv[1:]
+    wd = str(Path(wd).resolve())
+    final = ''
+    if cmd and cmd[0].startswith('FINAL='):
+        final = str(Path(wd, cmd.pop(0)[6:]).resolve())
+    if cmd and cmd[0] == '--':
+        cmd.pop(0)
+    if not cmd:
+        return 2
+    # Native structure when running the CLI directly. Shell commands remain intact.
+    if Path(cmd[0]).name == 'codex' and 'exec' in cmd and '--json' not in cmd:
+        cmd.insert(cmd.index('exec') + 1, '--json')
+    if Path(cmd[0]).name == 'claude' and ('-p' in cmd or '--print' in cmd):
+        if '--output-format' not in cmd:
+            cmd += ['--output-format', 'stream-json']
+        if '--verbose' not in cmd:
+            cmd.append('--verbose')
+    model = ''
+    for idx, arg in enumerate(cmd):
+        if arg in ('-m', '--model') and idx + 1 < len(cmd):
+            model = cmd[idx + 1]
+        if arg.startswith('--model='):
+            model = arg.split('=', 1)[1]
+    identity = normalize(agent, model)
+    effort = re.search(r'(?:model_reasoning_effort\s*=\s*|--(?:reasoning-effort|effort)(?:=|\s+))["\x27]?([a-z]+)', ' '.join(cmd))
+    if effort:
+        identity['reasoning'] = effort[1]
+    if not final:
+        for idx, arg in enumerate(cmd[:-1]):
+            if arg in ('-o', '--output-last-message'):
+                final = str(Path(wd, cmd[idx + 1]).resolve())
+    board = root()
+    try:
+        from signals import locked, load_json, atomic_json
+        with locked(board / 'agents.json.lock'):
+            availability = load_json(board / 'agents.json', {})
+            availability[identity['cli']] = dict(available=bool(shutil.which(identity['cli']) or shutil.which(cmd[0])), checked_at=now(), source='agent-run')
+            atomic_json(board / 'agents.json', availability)
+    except Exception:
+        pass
+    run_id = time.strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:12]
+    log = board / 'runs' / f'{run_id}.log'
+    env = dict(os.environ, BOARD_AGENT=agent, BOARD_RUN_ID=run_id, BOARD_ROOT=str(board), V2_BOARD_DIR=str(board))
+    started = time.monotonic()
+    base = git(wd, 'rev-parse', 'HEAD')
+    record = dict(id=run_id, run_id=run_id, card=card, agent=agent, model=identity['model'], reasoning=identity['reasoning'], cli=identity['cli'], worktree=wd, branch=git(wd, 'branch', '--show-current'), base_commit=base, pid=None, wrapper_pid=os.getpid(), log=str(log), final=final, started_at=now(), last_seen_at=now(), state='running', tool_calls=0)
+    safe(update_run, board, run_id, record)
+    safe(event, board, 'run:status', run_id=run_id, card=card, agent=agent, state='running', summary=f'{agent} 开始执行')
+    report(card, '开始', f'{agent} 开工', wd, env)
+    cancelled = False
+    child = None
+
+    def stop(sig, frame):
+        nonlocal cancelled
+        cancelled = True
+        if child and child.poll() is None:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+    pending = {}
+    last_flush = time.monotonic()
+
+    def flush():
+        nonlocal last_flush
+        for kind, contents in list(pending.items()):
+            safe(message, board, run_id, kind, ''.join(contents))
+        pending.clear()
+        last_flush = time.monotonic()
+
+    def consume(line):
+        try:
+            for kind, content, tool, extra in parse_line(line):
+                if kind in ('text', 'thinking'):
+                    pending.setdefault(kind, []).append(content + '\n')
+                    # Avoid unbounded buffers on a fast writer.
+                    if sum(map(len, pending[kind])) > 12000:
+                        flush()
+                else:
+                    flush()
+                    safe(message, board, run_id, kind, content, tool, **extra)
+        except Exception:
+            pass
+
+    rc = 1
+    sink = None
+    try:
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            sink = log.open('ab', buffering=0)
+            os.chmod(log, 0o640)
+        except OSError:
+            pass
+        child = subprocess.Popen(['nice', '-n', '19', *cmd], cwd=wd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        safe(update_run, board, run_id, {'pid': child.pid, 'last_seen_at': now()})
+        sel = selectors.DefaultSelector()
+        sel.register(child.stdout, selectors.EVENT_READ)
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        buffered = ''
+        heartbeat = time.monotonic()
+        while sel.get_map() or child.poll() is None:
+            for key, _ in sel.select(.1):
+                data = os.read(key.fd, 65536)
+                if not data:
+                    sel.unregister(key.fileobj)
+                    break
+                if sink:
+                    try:
+                        sink.write(data)
+                    except OSError:
+                        sink.close()
+                        sink = None
+                try:
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+                buffered += decoder.decode(data)
+                while '\n' in buffered:
+                    line, buffered = buffered.split('\n', 1)
+                    consume(line)
+                if len(buffered) > 1048576:
+                    consume(buffered[:12000])
+                    buffered = ''
+            current = time.monotonic()
+            if current - last_flush >= .5:
+                flush()
+            if current - heartbeat >= 15:
+                safe(update_run, board, run_id, {'last_seen_at': now()}, only_active=True)
+                heartbeat = current
+        buffered += decoder.decode(b'', final=True)
+        if buffered:
+            consume(buffered)
+        flush()
+        rc = child.wait()
+        sel.close()
+    except Exception as error:
+        safe(message, board, run_id, 'error', str(error))
+    finally:
+        if sink:
+            sink.close()
+    code = 128 - rc if rc < 0 else rc
+    state = 'cancelled' if cancelled or rc in (-2, -15, -1) else 'completed' if rc == 0 else 'timeout' if rc == 124 else 'failed'
+    head = git(wd, 'rev-parse', 'HEAD')
+    count = git(wd, 'rev-list', '--count', f'{base}..{head}') if base and head else ''
+    files = git(wd, 'diff', '--name-only', base, head).splitlines() if base and head else []
+    summary = ''
+    try:
+        if final:
+            summary = redact(Path(final).read_text(errors='replace'))[:600]
+    except OSError:
+        pass
+    duration = round(time.monotonic() - started, 3)
+    changes = dict(ended_at=now(), last_seen_at=now(), exit_code=code, state=state, head_commit=head, commits=int(count or 0), changed_files=len(files), final_summary=summary, duration_seconds=duration)
+    safe(update_run, board, run_id, changes)
+    safe(event, board, 'run:status', run_id=run_id, card=card, agent=agent, state=state, summary=summary or f'退出码 {code}，用时 {round(duration)} 秒')
+    status = '开发完成（待 Hark 验收）' if state == 'completed' else '超时' if state == 'timeout' else '失败'
+    report(card, status, f'退出码 {code}，用时 {int(duration // 60)} 分钟；{summary[:220]}', wd, env)
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

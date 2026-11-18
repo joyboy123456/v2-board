@@ -1,0 +1,5 @@
+# 生产 :3160 用宿主网络：宿主 DOCKER-USER 规则会丢弃 eth0 到容器的新连接（有意加固，不改防火墙）。
+services:
+  v2-board:
+    network_mode: host
+    ports: !reset []
