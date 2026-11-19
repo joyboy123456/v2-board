@@ -170,7 +170,7 @@ def _card_probe(card):
 
 def discover(root):
     """Every Markdown document inside a batch is a card; root keeps legacy IDs only."""
-    excluded = {'runs', 'events', 'shots'}
+    excluded = {'runs', 'events', 'shots', 'reports'}
     groups = [('wiring', root)] + [(p.name, p) for p in sorted(root.iterdir()) if p.is_dir() and not p.is_symlink() and not p.name.startswith('.') and p.name not in excluded]
     for sprint, directory in groups:
         for card in sorted(directory.glob('*.md')):

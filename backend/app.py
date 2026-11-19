@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import acceptance
+import repairs
 from fastapi.staticfiles import StaticFiles
 
 import board_parse as bp
@@ -121,6 +122,7 @@ def card_json(c):
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
         answerHistory=interventions.answer_history(c['body']), cardRevision=c['card_revision'],
+        repairSource=str(d.get('repair_source', '') or ''),
     )
 
 
@@ -255,7 +257,7 @@ def snapshot():
     reports, rerr = acceptance.collect(BOARD)
     errors = list(errors) + rerr
     board = dict(summary=rr.card_summary(items, rr.events(BOARD)), timeline=project_timeline(items), cards=items, errors=errors, links=cross_links(items), reports=reports,
-                 intervention=interventions.capabilities(BOARD),
+                 intervention=intervention_state(),
                  sprints=[dict(id=s, name=SPRINT_NAMES.get(s, s), desc=SPRINT_DESC.get(s, ''), count=sum(c['sprint'] == s for c in items)) for s in sprints])
     version = hashlib.sha1(json.dumps(board, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
     board['version'] = version
@@ -386,6 +388,30 @@ def now_cst():
 @app.get('/api/board')
 async def api_board():
     return JSONResponse(dict(hub.board, now=now_cst(), sys=sysinfo()))
+
+
+def intervention_state():
+    state = dict(interventions.capabilities(BOARD))
+    state['repair'] = repairs.enabled(state['mode'])
+    state['executors'] = repairs.executors(BOARD, state['mode']) if state['repair'] else []
+    return state
+
+
+@app.post('/api/interventions/repair')
+async def api_intervention_repair(request: Request):
+    try:
+        mode = interventions.capabilities(BOARD)['mode']
+        if mode == 'readonly' or not repairs.enabled(mode):
+            raise interventions.InterventionError(503, 'repair_disabled', '看板未开启指派修复。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        interventions.authorize(mode, request.headers.get('authorization', ''))
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(repairs.create, BOARD, payload, mode)
+        return JSONResponse(result)
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
 
 
 @app.post('/api/interventions/answer')

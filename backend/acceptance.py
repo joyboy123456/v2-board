@@ -15,6 +15,7 @@ site: https://oai.de5.net/v2
 正文 markdown ……
 ![截图说明](../shots/acc-tfix/xxx.png)
 """
+import hashlib
 import re
 from pathlib import Path
 
@@ -58,7 +59,8 @@ def split_cards(v: str):
 
 
 def parse(board: Path, path: Path):
-    meta, body = front(path.read_text(encoding='utf-8', errors='replace'))
+    raw = path.read_bytes()
+    meta, body = front(raw.decode('utf-8', errors='replace'))
     parts = re.split(r'^##\s+', body, flags=re.M)
     intro, items = parts[0].strip(), []
     for chunk in parts[1:]:
@@ -85,7 +87,7 @@ def parse(board: Path, path: Path):
     counts = {}
     for it in items:
         counts[it['verdict']] = counts.get(it['verdict'], 0) + 1
-    return dict(id=path.stem, title=meta.get('title', path.stem), date=meta.get('date', ''), by=meta.get('by', ''),
+    return dict(id=path.stem, revision=hashlib.sha256(raw).hexdigest(), title=meta.get('title', path.stem), date=meta.get('date', ''), by=meta.get('by', ''),
                 site=meta.get('site', ''), shotsNote=meta.get('shots', ''), intro=intro, items=items, counts=counts,
                 cards=sorted({c for it in items for c in it['cards']}))
 
