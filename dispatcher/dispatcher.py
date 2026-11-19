@@ -145,6 +145,32 @@ class Dispatcher:
             return None
         return None if fields[0] == 'Z' else fields[19]
 
+    @staticmethod
+    def inside(pid, worktree):
+        """Is this process working in that worktree? (launch starts every turn with the worktree as its cwd)"""
+        if not worktree:
+            return False
+        try:
+            cwd, root = os.path.realpath(f'/proc/{int(pid)}/cwd'), os.path.realpath(worktree)
+        except (OSError, ValueError, TypeError):
+            return False
+        return cwd == root or cwd.startswith(root + os.sep)
+
+    @staticmethod
+    def unmask(path):
+        """Keep a card writable for the board.
+
+        The board (another user) writes cards through the board directory's default ACL. A card created with mode 644
+        gets an ACL mask of r--, which silently turns that grant read-only: answering, messaging and stopping all fail.
+        Raising the group bits of a file that has an ACL raises its mask; files without an ACL are left alone.
+        """
+        try:
+            mode = path.stat().st_mode
+            if mode & 0o060 != 0o060 and 'system.posix_acl_access' in os.listxattr(path):
+                os.chmod(path, (mode & 0o7777) | 0o060)
+        except OSError:
+            pass
+
     def halt(self, card):
         """Someone pressed 停止 on the board. TERM first, so agent-run can pass it on and record the run; KILL what is left after the grace period.
 
@@ -156,9 +182,14 @@ class Dispatcher:
         pid = child.pid if child else rec.get('pid')
         if not pid:
             return
-        if not child and (not rec.get('pid_start') or self.ident(pid) != rec['pid_start']):
-            self.finish(card, None)  # 重启后接手的记录：这个 pid 已经不是当初那个进程了，不发信号
-            return
+        if not child:  # 重启后接手的记录：先确认这个 pid 还是当初那个进程，不是就不发信号
+            start = rec.get('pid_start')
+            if not start and self.inside(pid, rec.get('worktree')):
+                start = self.ident(pid)  # 升级前启动的那一轮没记启动时间；它还在这张卡的 worktree 里干活，就认它
+                self.save(card, pid_start=start)
+            if not start or self.ident(pid) != start:
+                self.finish(card, None)
+                return
         sent = rec.get('stop_sent')
         if sent and time.time() - sent < float(self.cfg['stop_grace_seconds']):
             return
@@ -402,6 +433,7 @@ class Dispatcher:
         todo = []
         for path, meta, body in cards.scan(self.board):
             card, state = path.stem, meta.get('dispatch')
+            self.unmask(path)
             if meta.get('stop'):
                 if card in self.children or self.alive(self.rec(card).get('pid')):
                     self.halt(card)

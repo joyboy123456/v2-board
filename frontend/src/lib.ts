@@ -128,7 +128,7 @@ export const RUN_STATE: Record<string, string> = { running: '运行中', lost: '
 export function runReason(value: string) { return ({ heartbeat_stale: '超过 3 分钟没有心跳', historical_open: '历史开工记录没有结束汇报', process_gone: '执行进程已退出' } as Record<string, string>)[value] || value; }
 
 /* ---------- 登录 ---------- */
-// 已登录时写操作靠登录 cookie，不用再填写入令牌；没开登录的实例（演示、只读）照旧填令牌
+// 已登录时写操作靠登录 cookie，不用再填写入令牌。只有开了写入又没开登录的实例才要填；演示实例不要令牌，只读实例不接受写入
 export const auth = { session: false };
 export const needsToken = (mode?: string) => mode === 'enabled' && !auth.session;
 export const LOGIN_EVENT = 'v2b-login-required';

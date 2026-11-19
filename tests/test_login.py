@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -72,9 +73,13 @@ class AuthTest(unittest.TestCase):
         self.assertFalse(t.blocked('a', now=300))  # 窗口过了一条
         for who in ('b', 'c', 'e'):
             t.fail(who, now=4)
-        self.assertTrue(t.blocked('d', now=5))  # 合计上限
-        self.assertFalse(t.blocked('d', now=400))
+        self.assertFalse(t.blocked('d', now=5))  # 合计输错再多也不把别人锁在外面，只是应答变慢
+        self.assertGreater(t.delay(now=5), t.delay(now=400))
         self.assertEqual(t.fails, [])
+        small = auth.Throttle(keep=4)
+        for i in range(10):
+            small.fail(str(i), now=i)
+        self.assertEqual([who for _, who in small.fails], ['6', '7', '8', '9'])
 
 
 class LoginApiTest(unittest.TestCase):
@@ -218,6 +223,28 @@ class LoginApiTest(unittest.TestCase):
         self.assertIn('用 v2', self.card.read_text(encoding='utf-8'))
         status, data, _ = self.call('POST', '/api/interventions/stop', {'card_key': 'h/01'}, headers=cookie)
         self.assertNotEqual(status, 401, data)
+
+    def test_stream_closes_when_the_login_expires(self):
+        cookie = auth.issue(self.env, now=time.time() - auth.TTL + 1.5)  # 还有 1.5 秒到期
+        chunks = []
+
+        async def run():
+            async def receive():
+                await asyncio.sleep(3600)  # 浏览器一直连着
+
+            async def send(message):
+                chunks.append(message)
+
+            scope = {'type': 'http', 'asgi': {'version': '3.0'}, 'http_version': '1.1', 'method': 'GET', 'scheme': 'http', 'path': '/api/stream', 'raw_path': b'/api/stream',
+                     'query_string': b'', 'root_path': '', 'headers': [(b'host', b'testserver'), (b'cookie', f'{auth.COOKIE}={cookie}'.encode())], 'client': ('203.0.113.9', 50000), 'server': ('testserver', 80)}
+            await asyncio.wait_for(self.app.app(scope, receive, send), timeout=8)
+
+        with patch.dict(os.environ, self.env, clear=True):
+            asyncio.run(run())
+        self.assertEqual(next(m for m in chunks if m['type'] == 'http.response.start')['status'], 200)
+        body = b''.join(m.get('body', b'') for m in chunks if m['type'] == 'http.response.body').decode()
+        self.assertIn('event: board', body)
+        self.assertFalse(chunks[-1].get('more_body', False))  # 流自己结束了，不是超时
 
     def test_no_login_without_a_password(self):
         env = {'V2_BOARD_DIR': str(self.root)}

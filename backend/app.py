@@ -450,7 +450,7 @@ async def api_login(request: Request):
         return JSONResponse({'error': 'too_many_attempts', 'detail': '密码输错的次数太多，请 5 分钟后再试。'}, status_code=429, headers={'Retry-After': str(auth.WINDOW)})
     if set(payload) != {'password'} or not auth.password_ok(payload['password']):
         login_throttle.fail(client)
-        await asyncio.sleep(.5)
+        await asyncio.sleep(login_throttle.delay())
         return JSONResponse({'error': 'bad_password', 'detail': '密码不对。'}, status_code=401)
     response = JSONResponse({'ok': True, 'login': True}, headers={'Cache-Control': 'no-store'})
     response.set_cookie(auth.COOKIE, auth.issue(), max_age=auth.TTL, path='/', httponly=True, samesite='lax', secure=_https(request))
@@ -657,6 +657,8 @@ async def api_events(since: str = ''):
 
 @app.get('/api/stream')
 async def api_stream(request: Request):
+    cookie, authorization = request.cookies.get(auth.COOKIE, ''), request.headers.get('authorization', '')
+
     async def gen():
         seen = -1
         serial = hub.serial
@@ -665,7 +667,8 @@ async def api_stream(request: Request):
         yield 'event: runs\ndata: ' + json.dumps(hub.signal_data, ensure_ascii=False) + '\n\n'
         recent = await asyncio.to_thread(rr.events, BOARD)
         yield 'event: events\ndata: ' + json.dumps(recent[-200:], ensure_ascii=False) + '\n\n'
-        while not await request.is_disconnected():
+        # 登录门只在连上的那一刻检查；连着的时候 cookie 到期就在这里断开，浏览器重连时会拿到 401 回登录页
+        while auth.allowed(cookie, authorization) and not await request.is_disconnected():
             if seen != hub.tick:
                 seen = hub.tick
                 yield 'event: board\ndata: ' + json.dumps(dict(hub.board, now=now_cst(), sys=sysinfo()), ensure_ascii=False) + '\n\n'

@@ -366,7 +366,7 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
           <label className="intervention-answer">你的回答
             <textarea value={answers[question.id] || ''} maxLength={4000} rows={3} disabled={mode === 'readonly' || Boolean(pending)} onChange={e => setAnswer(question.id, e.target.value)} placeholder="可选择上方选项，也可自由输入" />
           </label>
-          <div className="intervention-submit"><small>{(answers[question.id] || '').length}/4000</small><button type="button" disabled={mode === 'readonly' || Boolean(pending) || !c.cardRevision || !(answers[question.id] || '').trim() || (mode === 'enabled' && !token.trim())} onClick={() => void submit(question.id)}>{pending === question.id ? '正在记录…' : '确认并记录回答'}</button></div>
+          <div className="intervention-submit"><small>{(answers[question.id] || '').length}/4000</small><button type="button" disabled={mode === 'readonly' || Boolean(pending) || !c.cardRevision || !(answers[question.id] || '').trim() || (needsToken(mode) && !token.trim())} onClick={() => void submit(question.id)}>{pending === question.id ? '正在记录…' : '确认并记录回答'}</button></div>
         </article>
       ))}
       {error && <div className="intervention-error" role="alert"><p>{errorText}</p><button type="button" onClick={() => void refresh()}>刷新看板</button></div>}

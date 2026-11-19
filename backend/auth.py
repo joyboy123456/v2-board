@@ -79,10 +79,13 @@ def allowed(cookie, authorization, environ=None) -> bool:
 
 
 class Throttle:
-    """输错密码的次数限制：同一个来源 5 分钟内 8 次，所有来源合计 60 次，超了就先拒绝。已登录的设备不受影响。"""
+    """输错密码的次数限制：同一个来源 5 分钟内输错 8 次就先拒绝它。
 
-    def __init__(self, window=WINDOW, per_client=8, overall=60):
-        self.window, self.per_client, self.overall = window, per_client, overall
+    所有来源合计输错太多时不拒绝任何人（否则别人故意输错就能把主人锁在外面），只把每次输错后的应答放慢。已登录的设备不受影响。
+    """
+
+    def __init__(self, window=WINDOW, per_client=8, overall=60, keep=5000):
+        self.window, self.per_client, self.overall, self.keep = window, per_client, overall, keep
         self.fails: list[tuple[float, str]] = []
 
     def _recent(self, now):
@@ -91,8 +94,13 @@ class Throttle:
 
     def blocked(self, client: str, now=None) -> bool:
         recent = self._recent(time.monotonic() if now is None else now)
-        return len(recent) >= self.overall or sum(1 for _, who in recent if who == client) >= self.per_client
+        return sum(1 for _, who in recent if who == client) >= self.per_client
+
+    def delay(self, now=None) -> float:
+        """How long to hold a wrong-password reply, in seconds."""
+        return 3.0 if len(self._recent(time.monotonic() if now is None else now)) >= self.overall else .5
 
     def fail(self, client: str, now=None) -> None:
         now = time.monotonic() if now is None else now
         self._recent(now).append((now, client))
+        del self.fails[:-self.keep]

@@ -1,11 +1,13 @@
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'dispatcher'))
@@ -208,6 +210,7 @@ class DispatcherTest(unittest.TestCase):
         d.tick()
         self.started(d, 'S5')
         orphan = int(Path(d.rec('S5')['worktree'], 'orphan.pid').read_text())
+        self.addCleanup(lambda: Dispatcher.alive(orphan) and os.kill(orphan, signal.SIGKILL))
         cards.update(path, stop=cards.stamp())
         self.settle(d, lambda: self.state('S5') == 'held')
         self.assertTrue(Dispatcher.alive(orphan))  # 父进程已经退了，它不理 TERM
@@ -233,6 +236,38 @@ class DispatcherTest(unittest.TestCase):
         finally:
             other.kill()
             other.wait()
+
+    def test_stop_reaches_a_turn_started_before_the_upgrade(self):
+        # 升级前启动的那一轮：记录里有 pid、没有启动时间。它还在这张卡的 worktree 里，停止要真的停掉它
+        d = Dispatcher(self.cfg)
+        wt = self.tmp / 'legacy-wt'
+        wt.mkdir()
+        for card, cwd, stopped in (('S7', wt, True), ('S8', self.tmp, False)):
+            proc = subprocess.Popen(['sleep', '30'], cwd=cwd, start_new_session=True)
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+            path = self.write(card, 'sleep', 'stop: "2026-11-19 23:00:00 CST"\n')
+            cards.update(path, dispatch='running')
+            d.save(card, pid=proc.pid, attempt=1, worktree=str(wt))
+            d.tick()
+            if stopped:
+                self.assertEqual(proc.wait(timeout=5), -signal.SIGTERM)
+                self.assertTrue(d.rec(card)['pid_start'])
+                self.settle(d, lambda: self.state(card) == 'held')
+            else:  # 同一个 pid 现在是别处的进程：不发信号，只把卡收尾
+                self.assertEqual(self.state(card), 'held')
+                self.assertIsNone(proc.poll())
+
+    def test_cards_stay_writable_for_the_board(self):
+        d = Dispatcher(self.cfg)
+        masked, plain = self.write('P1', 'ok'), self.write('P2', 'ok')
+        for path in (masked, plain):
+            cards.update(path, dispatch='done')
+            path.chmod(0o644)
+        with patch('os.listxattr', lambda path: ['system.posix_acl_access'] if Path(path) == masked else []):
+            d.tick()
+        self.assertEqual(masked.stat().st_mode & 0o777, 0o664)  # 有 ACL 的卡：把掩码放回读写
+        self.assertEqual(plain.stat().st_mode & 0o777, 0o644)  # 没有 ACL 的不动
 
     def test_stop_before_start_and_stale_requests(self):
         queued = self.write('S3', 'ok', 'stop: "2026-11-19 23:00:00 CST"\n')

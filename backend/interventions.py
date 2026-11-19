@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import errno
 import os
 import re
 import stat
@@ -394,7 +395,9 @@ def _open_card(root_fd: int, relative: Path) -> int:
             os.close(fd)
             raise InterventionError(400, 'invalid_card_file', '任务卡必须是普通文件。')
         return fd
-    except OSError:
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise InterventionError(500, 'card_not_writable', '看板没有这张任务卡的写入权限，这次操作没有生效。请在服务器上检查这个文件的权限。')
         raise InterventionError(400, 'invalid_card_path', '任务卡路径包含无效目录或符号链接。')
     finally:
         os.close(directory_fd)

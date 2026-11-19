@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,15 @@ class ChatTest(unittest.TestCase):
         self.assertEqual(result['revision'], hashlib.sha256(self.path.read_bytes()).hexdigest())
         log = chat.chat_log(result['card_meta'], result['card_body'])
         self.assertEqual([(x['kind'], x['id'], x['delivered']) for x in log], [('message', 'M1', False)])
+
+    @unittest.skipIf(os.geteuid() == 0, 'root 不受文件权限限制')
+    def test_unwritable_card_says_so(self):
+        self.path.write_text(card('done'))
+        self.path.chmod(0o444)
+        with self.assertRaises(iv.InterventionError) as caught:
+            self.send()
+        self.assertEqual((caught.exception.status, caught.exception.code), (500, 'card_not_writable'))
+        self.assertNotIn('留言', self.path.read_text())
 
     def test_states(self):
         for state, after in (('queued', 'queued'), ('running', 'running'), ('asking', 'asking'), ('answered', 'answered'), ('held', 'held'), ('failed', 'answered')):

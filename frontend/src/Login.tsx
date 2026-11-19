@@ -48,8 +48,9 @@ function Login({ done }: { done: () => Promise<void> }) {
       setError(data.detail || '登录失败 (' + response.status + ')');
     } catch {
       setError('连不上看板服务，稍后再试。');
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   };
   return <main className="login">
     <form className="login-card" onSubmit={submit}>
