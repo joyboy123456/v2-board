@@ -20,6 +20,7 @@ import setup_intervention_demo as demo_setup  # noqa: E402
 
 CARD = '''---
 id: TEST-CARD
+demo: true
 title: Original title
 status: in_progress
 dispatch: "asking"
@@ -214,6 +215,14 @@ class InterventionTest(unittest.TestCase):
         self.assertEqual(history[0]['actor'], 'user')
         self.assertEqual(history[0]['answer'], 'saved answer')
         self.assertEqual(result['revision'], digest(self.card))
+
+    def test_demo_mode_never_writes_cards_that_are_not_marked_synthetic(self):
+        self.card.write_text(CARD.replace('demo: true\n', ''), encoding='utf-8')
+        original = self.card.read_bytes()
+        self.error('not_demo_card', self.write, 403)
+        self.assertEqual(self.card.read_bytes(), original)
+        env = {'V2_BOARD_DIR': str(self.root), 'V2_INTERVENTION_MODE': 'enabled', 'V2_INTERVENTION_TOKEN': 't'}
+        self.assertEqual(self.write(mode='enabled', environ=env)['remaining'], 1)
 
     def test_oversized_card_is_still_shown_but_cannot_be_written(self):
         self.card.write_text(CARD + 'x' * (iv.MAX_CARD_BYTES + 1), encoding='utf-8')

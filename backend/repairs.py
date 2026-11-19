@@ -157,6 +157,8 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
         source, _, _, revision = bp.metadata(hits[0], key.split('/')[0], include_revision=True)
     except (OSError, ValueError):
         raise iv.InterventionError(409, 'malformed_card', '原任务卡读不出来，未创建修复卡。')
+    if mode == 'demo' and not iv.is_demo_card(source):
+        raise iv.InterventionError(403, 'not_demo_card', '演示模式只能从合成的演示卡片指派修复，没有建卡。')
     if not hmac.compare_digest(revision, rev):
         raise iv.InterventionError(409, 'stale_revision', '任务卡已更新，请刷新后再指派。')
     paths = [p for p in sorted((root / 'reports').glob('*.md')) if p.stem == rid and not p.is_symlink() and p.is_file()] if (root / 'reports').is_dir() else []
@@ -184,7 +186,7 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
     stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M')
     front = ['---', f'id: "{repair_id}"', f'title: "修复：{_one_line(str(source["id"]), 40)} · {_one_line(item["title"], 60)}"', 'status: "open"',
              f'assignee: "{executor}"', f'executor: "{executor}"', f'dispatch: "{dispatch}"', f'branch: "d/repair-{digest}"',
-             *([f'repo: "{repo}"', f'base: "{base}"'] if mode == 'enabled' else []),
+             *([f'repo: "{repo}"', f'base: "{base}"'] if mode == 'enabled' else ['demo: true']),
              f'created: "{stamp}"', f'repair_source: "{_one_line(key, 256)}"', f'repair_report: "{_one_line(rid, 200)}"', f'repair_item: "{index}"', '---', '']
     text = '\n'.join(front) + _body(source, key, report, index, item, _shots(root, item), notes, browser, test_mode, repair_id)
     folder = root / 'fix'

@@ -19,6 +19,7 @@ import cards as dispatcher_cards  # noqa: E402
 
 SOURCE = '''---
 id: SRC
+demo: true
 title: 原任务
 status: rejected
 branch: h/src
@@ -169,6 +170,11 @@ class RepairTest(unittest.TestCase):
                        SOURCE.replace('branch: h/src', 'branch: --upload-pack=x')):
             self.card.write_text(broken, encoding='utf-8')
             self.assertEqual(self.code(self.payload()), 'missing_repo')
+        self.assertFalse((self.root / 'fix').exists())
+
+    def test_demo_mode_only_repairs_cards_marked_synthetic(self):
+        self.card.write_text(SOURCE.replace('demo: true\n', ''), encoding='utf-8')
+        self.assertEqual(self.code(self.payload(executor='demo-codex'), mode='demo', env=self.demo), 'not_demo_card')
         self.assertFalse((self.root / 'fix').exists())
 
     def test_malformed_dispatch_config_lists_no_executors(self):

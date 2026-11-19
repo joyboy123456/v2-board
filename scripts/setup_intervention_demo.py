@@ -18,6 +18,7 @@ DEFAULT_ROOT = Path.home() / 'v2-board-intervention-demo'
 FIXTURES = {
     'h/01.md': '''---
 id: DEMO-ASK-MULTI
+demo: true
 title: 选择合成卡片的视觉方向
 status: in_progress
 assignee: Server Worker Alpha
@@ -34,6 +35,7 @@ dispatch: "asking"
 ''',
     'h/02.md': '''---
 id: DEMO-ASK-SINGLE
+demo: true
 title: 确认合成任务的输出比例
 status: in_progress
 assignee: Server Worker Beta
@@ -49,6 +51,7 @@ dispatch: "asking"
 ''',
     'h/03.md': '''---
 id: DEMO-RUNNING
+demo: true
 title: 正在执行的合成任务（只读示例）
 status: in_progress
 assignee: Server Worker Gamma
@@ -61,6 +64,7 @@ dispatch: "running"
 ''',
     'h/04.md': '''---
 id: DEMO-ANSWERED
+demo: true
 title: 已记录回答的合成历史
 status: in_progress
 assignee: Server Worker Delta
@@ -79,6 +83,7 @@ dispatch: "answered"
 ''',
     'h/05.md': '''---
 id: DEMO-REJECTED
+demo: true
 title: 验收未通过的合成任务（可指派修复）
 status: rejected
 assignee: Server Worker Alpha

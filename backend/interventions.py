@@ -400,6 +400,11 @@ def _open_card(root_fd: int, relative: Path) -> int:
         os.close(directory_fd)
 
 
+def is_demo_card(data: dict) -> bool:
+    """演示模式不要求登录，所以只允许改写 front matter 里标了 `demo: true` 的合成卡片。"""
+    return str(data.get('demo', '')).lower() == 'true'
+
+
 def _overwrite(fd: int, data: bytes) -> None:
     os.lseek(fd, 0, os.SEEK_SET)
     view = memoryview(data)
@@ -449,6 +454,13 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
         newline = '\r\n' if b'\r\n' in raw else '\n'
         front_match, front, dispatch_line, dispatch_offset, dispatch_ending = _dispatch_frontmatter(text)
         body = text[front_match.end():]
+        if mode == 'demo':
+            try:
+                demo_card = is_demo_card(bp.split_front(text)[0])
+            except (ValueError, TypeError):
+                demo_card = False
+            if not demo_card:
+                raise InterventionError(403, 'not_demo_card', '演示模式只能改写合成的演示卡片，这张卡没有改动。')
         questions, answers, answer_heading = _protocol_sections(body)
         if not questions:
             raise InterventionError(409, 'malformed_protocol', '任务卡没有可回答的问题，未写入。')
