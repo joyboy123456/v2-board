@@ -180,7 +180,7 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
     dispatch = 'queued' if mode == 'enabled' else 'held'
     stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M')
     front = ['---', f'id: "{repair_id}"', f'title: "修复：{source["id"]} · {_one_line(item["title"], 60)}"', 'status: "open"',
-             f'executor: "{executor}"', f'dispatch: "{dispatch}"', f'branch: "d/repair-{digest}"',
+             f'assignee: "{executor}"', f'executor: "{executor}"', f'dispatch: "{dispatch}"', f'branch: "d/repair-{digest}"',
              *([f'repo: "{repo}"', f'base: "{base}"'] if mode == 'enabled' else []),
              f'created: "{stamp}"', f'repair_source: "{key}"', f'repair_report: "{_one_line(rid, 200)}"', f'repair_item: "{index}"', '---', '']
     text = '\n'.join(front) + _body(source, key, report, index, item, _shots(root, item), notes, browser, test_mode, repair_id)

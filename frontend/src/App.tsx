@@ -371,7 +371,7 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
 function Drawer({ b, c, now, close, open, refresh }: { b: Board; c: Card; now: string; close: () => void; open: (k: string) => void; refresh: () => Promise<Board | undefined> }) {
   const accN = reportsFor(b.reports, c).reduce((a, x) => a + x.items.length, 0);
   const hasIntervention = Boolean(c.questions?.length || c.answerHistory.length);
-  const firstTab = hasIntervention ? 'intervene' : accN && ['rejected', 'review', 'accepted'].includes(c.st) ? 'acc' : 'rep';
+  const firstTab = hasIntervention ? 'intervene' : accN && ['rejected', 'review', 'accepted'].includes(c.st) ? 'acc' : c.repairSource && !c.reports.length ? 'card' : 'rep';
   type DrawerTab = 'acc' | 'rep' | 'dec' | 'git' | 'card' | 'intervene';
   const [tab, setTab] = useState<DrawerTab>(firstTab);
   useEffect(() => { setTab(firstTab); }, [c.key]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -389,6 +389,7 @@ function Drawer({ b, c, now, close, open, refresh }: { b: Board; c: Card; now: s
             <div><dt>执行</dt><dd>{c.assignee || '未指派'}</dd></div>
             {c.bench && <div><dt>对标</dt><dd>{c.bench}</dd></div>}
             <div><dt>分支</dt><dd><code>{c.branch || '未登记'}</code></dd></div>
+            {c.repairSource && <div><dt>修复</dt><dd><button className="dep" onClick={() => open(c.repairSource!)}><Link2 size={11} />原卡 {b.cards.find(x => x.key === c.repairSource)?.id || c.repairSource}</button></dd></div>}
             <div><dt>依赖</dt><dd>{c.depends.length ? c.depends.map(d => <button key={d} className="dep" onClick={() => open(d.includes('/') ? d : `${c.sprint}/${d}`)}><Link2 size={11} />{d}</button>) : '无'}{c.dependsInferred && <small>（推断）</small>}</dd></div>
             <div><dt>最近</dt><dd>{full(c.stamp)}（{ago(c.stamp, now)}）</dd></div>
             <div><dt>开工</dt><dd>{full(c.latestRun?.started_at || c.created)}</dd></div>

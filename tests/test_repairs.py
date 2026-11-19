@@ -115,6 +115,7 @@ class RepairTest(unittest.TestCase):
         meta, body = dispatcher_cards.parse(text)
         self.assertEqual((meta['dispatch'], meta['executor'], meta['repo'], meta['base']), ('queued', 'codex-a', '/srv/example-repo', 'h/src'))
         self.assertTrue(meta['branch'].startswith('d/repair-'))
+        self.assertEqual(meta['assignee'], 'codex-a')
         self.assertEqual(meta['repair_source'], 'h/SRC')
         self.assertIn('结果节点是红框', body)
         self.assertIn(str(self.root / 'reports/shots/a.png'), body)

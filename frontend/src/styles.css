@@ -842,3 +842,6 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .repair-act button { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line-2); font-size: 13px; }
 .repair-act button.primary { border-color: rgba(51,156,255,.5); background: rgba(51,156,255,.14); color: #9dd0ff; }
 .repair-act button:disabled { opacity: .45; cursor: not-allowed; }
+.repair-act button, .repair-act button.primary { flex: 0 0 auto; width: auto; white-space: nowrap; }
+.dr-tabs { scrollbar-width: none; }
+.dr-tabs::-webkit-scrollbar { display: none; }
