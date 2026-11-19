@@ -325,7 +325,10 @@ def _append_answer(body: str, heading_match: re.Match | None, answer_line: str, 
     if before and not before.endswith(newline):
         before += newline
     updated = before + answer_line + newline + after
-    return body[:heading_match.end()] + updated + body[end:]
+    head = body[:heading_match.end()]
+    if not head.endswith('\n'):
+        head += newline  # 「## 回答」是文件最后一行且没有换行
+    return head + updated + body[end:]
 
 
 def answer_history(body: str) -> list[dict]:

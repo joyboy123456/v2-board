@@ -198,6 +198,15 @@ class InterventionTest(unittest.TestCase):
         self.assertFalse(dispatcher_cards.open_questions(body))
         self.assertEqual(set(dispatcher_cards.answers(body)), {'Q1', 'Q2'})
 
+    def test_answer_heading_at_end_of_file_without_newline(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dispatcher'))
+        import cards as dispatcher_cards
+        self.card.write_text(CARD.split('## Notes')[0].rstrip('\n') + '\n\n## 回答', encoding='utf-8')
+        iv.write_answer(self.root, self.payload('Q1', 'first'), 'demo', self.demo_env)
+        text = self.card.read_text(encoding='utf-8')
+        self.assertIn('## 回答\n- [Q1] ', text)
+        self.assertEqual(set(dispatcher_cards.answers(dispatcher_cards.parse(text)[1])), {'Q1'})
+
     def test_answer_history_is_visible_after_questions_are_answered(self):
         result = self.write(self.payload('Q1', 'saved answer'))
         history = iv.answer_history(self.card.read_text(encoding='utf-8').split('---\n', 2)[-1])
