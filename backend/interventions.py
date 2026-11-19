@@ -23,6 +23,7 @@ MAX_REQUEST_BYTES = 16 * 1024
 MAX_ANSWER_CHARS = 4000
 SECTION_RE = re.compile(r'(?m)^## (待回答|回答)[ \t]*(?:\r?\n|$)')
 OTHER_HEADING_RE = re.compile(r'(?m)^## ')
+STAMP_RE = re.compile(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?( CST)?')
 ITEM_RE = re.compile(r'^- \[(Q[1-9][0-9]*)\] (.+)$')
 KEY_RE = re.compile(r'^[^/\\\x00-\x1f\x7f]+/[^/\\\x00-\x1f\x7f]+$')
 QUESTION_ID_RE = re.compile(r'^Q[1-9][0-9]*$')
@@ -211,7 +212,7 @@ async def request_json(request) -> dict:
 
     try:
         value = json.loads(b''.join(chunks).decode('utf-8'), object_pairs_hook=unique_object)
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise InterventionError(400, 'invalid_json', '请求必须是有效的 JSON。')
     if not isinstance(value, dict):
         raise InterventionError(422, 'invalid_request', '请求内容必须是对象。')
@@ -345,6 +346,8 @@ def answer_history(body: str) -> list[dict]:
             continue
         question_id, payload = match.groups()
         timestamp, separator, value = payload.partition(' | ')
+        if separator and not STAMP_RE.fullmatch(timestamp.strip()):
+            timestamp, separator = payload, ''  # 旧格式回答正文里自带 ' | '，整段都是回答
         actor = '人工'
         if separator and value.startswith('user: '):
             actor, value = 'user', value[6:]
@@ -395,6 +398,16 @@ def _open_card(root_fd: int, relative: Path) -> int:
         raise InterventionError(400, 'invalid_card_path', '任务卡路径包含无效目录或符号链接。')
     finally:
         os.close(directory_fd)
+
+
+def _overwrite(fd: int, data: bytes) -> None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+    os.ftruncate(fd, len(data))
+    os.fsync(fd)
 
 
 def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
@@ -473,13 +486,16 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
         updated_raw = updated_text.encode('utf-8')
         if len(updated_raw) > MAX_CARD_BYTES:
             raise InterventionError(413, 'card_too_large', '任务卡超过可安全修改的大小限制。')
-        os.lseek(card_fd, 0, os.SEEK_SET)
-        os.ftruncate(card_fd, 0)
-        view = memoryview(updated_raw)
-        while view:
-            written = os.write(card_fd, view)
-            view = view[written:]
-        os.fsync(card_fd)
+        # dispatcher 对卡片文件本身加锁，所以原地改写而不是换文件；先覆盖再截断，
+        # 写到一半失败就把原内容写回去，不留下空卡或半张卡。
+        try:
+            _overwrite(card_fd, updated_raw)
+        except OSError:
+            try:
+                _overwrite(card_fd, raw)
+            except OSError:
+                pass
+            raise
         revision = hashlib.sha256(updated_raw).hexdigest()
         return dict(card_key=card_key, question_id=question_id, revision=revision, card_body=updated_body,
                     remaining=remaining, dispatch=dispatch,

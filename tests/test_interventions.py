@@ -215,6 +215,29 @@ class InterventionTest(unittest.TestCase):
         self.assertEqual(history[0]['answer'], 'saved answer')
         self.assertEqual(result['revision'], digest(self.card))
 
+    def test_legacy_answer_containing_separator_is_not_cut(self):
+        body = '## 回答\n- [Q1] 用方案 A | 不要方案 B\n- [Q2] 2026-01-01 09:05:00 CST | user: 好 | 就这样\n'
+        history = iv.answer_history(body)
+        self.assertEqual((history[0]['time'], history[0]['answer']), ('', '用方案 A | 不要方案 B'))
+        self.assertEqual((history[1]['time'], history[1]['actor'], history[1]['answer']),
+                         ('2026-01-01 09:05:00 CST', 'user', '好 | 就这样'))
+
+    def test_failed_write_restores_the_original_card(self):
+        original = self.card.read_bytes()
+        real_write, calls = os.write, []
+
+        def flaky(fd, data):
+            calls.append(len(data))
+            if len(calls) == 1:
+                real_write(fd, bytes(data[:40]))
+                raise OSError('disk full')
+            return real_write(fd, data)
+
+        with patch.object(iv.os, 'write', flaky):
+            self.error('card_unavailable', self.write, 400)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.card.read_bytes(), original)
+
 
 class DemoSetupGuardTest(unittest.TestCase):
     def setUp(self):
@@ -432,6 +455,21 @@ class InterventionApiTest(unittest.TestCase):
         raw = b'{"card_key":"h/01","card_key":"h/01"}'
         with patch.dict(os.environ, env, clear=True):
             status, body, _ = self.call(raw_body=raw)
+            self.assertEqual((status, body['error']), (400, 'invalid_json'))
+
+    def test_deeply_nested_json_is_a_client_error(self):
+        env = {'V2_BOARD_DIR': str(self.root), 'V2_INTERVENTION_MODE': 'demo'}
+        real_loads, raised = json.loads, []
+
+        def too_deep(*args, **kwargs):
+            if not raised:
+                raised.append(True)
+                raise RecursionError
+            return real_loads(*args, **kwargs)
+
+        # 3.12 的 json 解析在 16 KB 请求体内不会递归溢出，这里直接模拟旧版本的行为
+        with patch.dict(os.environ, env, clear=True), patch.object(iv.json, 'loads', too_deep):
+            status, body, _ = self.call(payload=self.request_payload())
             self.assertEqual((status, body['error']), (400, 'invalid_json'))
 
 

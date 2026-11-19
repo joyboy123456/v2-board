@@ -459,7 +459,7 @@ async def api_file(rel: str):
     target = acceptance.safe_file(BOARD, rel)
     if not target:
         raise HTTPException(404)
-    return FileResponse(target, headers={'Cache-Control': 'public, max-age=86400'})
+    return FileResponse(target, headers={'Cache-Control': 'no-cache'})
 
 
 @app.get('/api/agents')
