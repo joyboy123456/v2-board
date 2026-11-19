@@ -167,8 +167,8 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 | `V2_INTERVENTION_MODE` | `readonly`（默认）、`demo` 或 `enabled`；后两者都必须同时显式设置 `V2_BOARD_DIR` |
 | `V2_INTERVENTION_TOKEN` | `enabled` 模式必填，请求用 `Authorization: Bearer` 携带；不写进卡片和日志 |
 | `V2_REPAIR_ENABLED=1` | 在 `enabled` 模式下另外开启指派修复 |
-| `V2_REPAIR_BASE` | 验收项没写「卡：」时修复分支的起点（比如线上部署所在的分支）。不设就不能指派这类验收项；只在 `enabled` 模式生效 |
-| `V2_REPAIR_REPO` | 上面这类修复卡登记的仓库路径，写 dispatcher 所在机器上的绝对路径；不设时取 `V2_REPO_DIR` |
+| `V2_REPAIR_BASE` | 验收项没有指向看板上存在的任务卡时（没写「卡：」，或写的卡号在看板上找不到）修复分支的起点，比如线上部署所在的分支。不设就不能指派这类验收项；只在 `enabled` 模式生效 |
+| `V2_REPAIR_REPO` | 只用于上面这类不挂原卡的修复卡：登记的仓库路径，写 dispatcher 所在机器上的绝对路径；不设时取 `V2_REPO_DIR`。基于原卡的修复不用它 |
 | `V2_BROWSER_EXECUTORS` | 逗号分隔的执行器名；只有列在这里的才标「浏览器验收已确认」，其余标「未确认」 |
 | `V2_INTERVENTION_TRUST_PROXY_HEADERS=1` | 同源校验改用 `X-Forwarded-Host` / `X-Forwarded-Proto`。经反向代理访问时不设它，写入请求会因来源与 Host 不一致被 403 拒绝；只在看板只能经由可信反代到达时开启 |
 
@@ -178,7 +178,7 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 - 修复卡的报错文字和截图由服务端从验收报告里读，不采信浏览器传来的内容；同一验收项重复指派只会有一张卡。
 - 执行器列表取自 `DISPATCH_CONFIG` 里 `executors` 的键名，且该配置的 `board` 必须就是本看板目录；命令和配置内容不外传。
 - 修复卡写 `dispatch: queued`，带独立分支 `d/repair-*`，以原卡分支为基线；dispatcher 有空槽位时为它建独立 worktree。原卡需要登记分支，仓库取原卡的 `repo` 或 `V2_REPO_DIR`。
-- 「验收报告」页和任务卡的「验收」页签都能指派。报告里写了「卡：」的验收项基于那张卡（写了多张时在表单里选）；没写的验收项不挂原卡，修复卡以 `V2_REPAIR_BASE` 为基线、仓库取 `V2_REPAIR_REPO`，正文注明需要 Agent 自己定位代码。验收项写了看板上存在的卡时，不能绕过那张卡指派。
+- 「验收报告」页和任务卡的「验收」页签都能指派。报告里写了「卡：」的验收项基于那张卡（写了多张时在表单里选）；没写、或写的卡号在看板上找不到的验收项不挂原卡，修复卡以 `V2_REPAIR_BASE` 为基线、仓库取 `V2_REPAIR_REPO`，正文注明需要 Agent 自己定位代码（找不到的卡号会原样写进去）。验收项写了看板上存在的卡（按卡的 id 或「批次/文件名」认）时，不能绕过那张卡指派。
 - 指派时勾选了浏览器验收，修复卡正文才带云浏览器验收步骤（`scripts/cloud-browser/run.sh`，真实接口或 `--fixture`）和回收沙盒的要求；没勾选时只写自动化测试要求。修复后的验收报告在「卡：」一行同时写修复卡和原卡编号，就会显示在原卡的验收页签里。
 - `demo` 模式不要求令牌，所以有两道限制：数据目录必须带标记文件，并且只改写 front matter 里标了 `demo: true` 的卡片，其余卡片一律拒绝。`python3 scripts/setup_intervention_demo.py` 生成合成卡片、一份合成验收报告和截图；演示里的修复卡是 `held` 状态，不会被执行。
 

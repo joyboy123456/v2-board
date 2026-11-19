@@ -6,6 +6,8 @@ import { md } from './lib';
 
 export const VERDICT_LABEL: Record<Verdict, string> = { pass: '通过', fail: '未通过', partial: '部分通过', pending: '未完成', note: '说明' };
 const VERDICT_ORDER: Verdict[] = ['fail', 'partial', 'pending', 'pass', 'note'];
+/** 这些结论的验收项可以指派修复 */
+const REPAIRABLE: Verdict[] = ['fail', 'partial', 'pending'];
 
 export function VerdictTag({ v, text }: { v: Verdict; text?: string }) {
   const Icon = v === 'pass' ? CircleCheck : v === 'fail' ? CircleX : v === 'partial' ? CircleAlert : CircleDashed;
@@ -116,23 +118,23 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
             <a className="dep" href={`?view=reports&report=${encodeURIComponent(r.id)}`}>看整份报告 →</a>
           </div>
           {r.shotsNote && items.every(it => !it.shots.length) && <p className="hint">{r.shotsNote}</p>}
-          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} cands={[[...children].reverse().find(x => itemHits(it, x)) || c]} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
+          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={REPAIRABLE.includes(it.verdict) ? <RepairForm b={b} cands={[[...children].reverse().find(x => itemHits(it, x)) || c]} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
         </section>
       ))}
     </div>
   );
 }
 
-/** 验收项上的「指派修复」：选执行器，把报错和截图整理成独立修复卡 */
-const REPAIRABLE: Verdict[] = ['fail', 'partial', 'pending'];
-
-/** 整份报告页上，一个验收项可以基于哪些任务卡修：报告里写了卡号的那些，最近的修复卡排最前 */
+/** 整份报告页上，一个验收项可以基于哪些任务卡修：报告里写了卡号的那些，最近建的修复卡排最前 */
 export function repairCands(b: Board, it: AccItem) {
   const hits = b.cards.filter(c => itemHits(it, c));
-  return [...hits.filter(c => c.repairSource).reverse(), ...hits.filter(c => !c.repairSource)];
+  return [...hits.filter(c => c.repairSource).sort((a, z) => z.created.localeCompare(a.created)), ...hits.filter(c => !c.repairSource)];
 }
 
-/** cands 为空表示报告没写这一项对应哪张任务卡：不关联任务卡，从看板配置的默认分支修 */
+/**
+ * 验收项上的「指派修复」：选执行器，把报错和截图整理成独立修复卡。
+ * cands 为空表示这一项没有对应看板上的任务卡（没写卡号，或写的卡号找不到）：不关联任务卡，从看板配置的默认分支修。
+ */
 function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[]; r: AccReport; index: number; it: AccItem; open: (k: string) => void }) {
   const iv = b.intervention;
   const list = iv?.executors || [];
@@ -149,7 +151,7 @@ function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[];
   const [error, setError] = useState('');
   const [done, setDone] = useState<{ repair_key: string; message: string } | null>(null);
   const existing = c
-    ? b.cards.filter(x => x.repairSource === c.key)
+    ? b.cards.filter(x => x.repairSource === c.key && x.repairReport === r.id && x.repairItem === String(index))
     : b.cards.filter(x => !x.repairSource && x.repairReport === r.id && x.repairItem === String(index));
   if (!iv?.repair) return iv?.mode === 'readonly' ? null : <p className="hint">这个看板没有开启「指派修复」。</p>;
   const links = existing.length > 0 && <p className="repair-links">已有修复卡：{existing.map(x => <button key={x.key} className="cid" onClick={() => open(x.key)}>{x.id}</button>)}</p>;
@@ -189,7 +191,7 @@ function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[];
         : <div className="repair-form">
           <p className="repair-sum">会把这一项的结论、报错说明{it.shots.length ? `和 ${it.shots.length} 个截图/录屏` : ''}{c
             ? `连同原卡 ${c.id} 的分支信息一起交给 Agent，原卡不会被改动。`
-            : `一起交给 Agent。报告没写这一项对应哪张任务卡，Agent 会从 ${iv.repairBase} 分支开独立 worktree 自己定位代码，验收报告不会被改动。`}</p>
+            : `一起交给 Agent。${it.cards.length ? `报告写的任务卡（${it.cards.join('、')}）在看板上找不到` : '报告没写这一项对应哪张任务卡'}，Agent 会从 ${iv.repairBase} 分支开独立 worktree 自己定位代码，验收报告不会被改动。`}</p>
           {cands.length > 1 && <label>基于哪张任务卡
             <select value={c?.key} onChange={e => setPick(e.target.value)}>
               {cands.map(x => <option key={x.key} value={x.key}>{x.id} · {x.title}</option>)}

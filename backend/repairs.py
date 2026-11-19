@@ -39,7 +39,7 @@ def enabled(mode: str, environ=None) -> bool:
 
 
 def _repo(env) -> str:
-    """dispatcher 所在机器上的仓库路径；看板跑在容器里时用 V2_REPAIR_REPO 写宿主路径。"""
+    """不挂原卡的修复用哪个仓库：dispatcher 所在机器上的路径；看板跑在容器里时用 V2_REPAIR_REPO 写宿主路径。"""
     return str(env.get('V2_REPAIR_REPO') or env.get('V2_REPO_DIR') or '').strip()
 
 
@@ -128,8 +128,10 @@ def _shots(root: Path, item: dict) -> tuple[list[str], list[str], list[str]]:
 
 def _body(source, key: str, base: str, report: dict, index: int, item: dict, shots, notes: str, browser: bool, test_mode: str, repair_id: str) -> str:
     local, links, missing = shots
+    unknown = '、'.join(_one_line(str(c), 60) for c in item.get('cards', []))
     origin = ([f'- 原任务卡：{key}（{_one_line(source.get("title", ""))}）', f'- 原分支：{source.get("branch") or "未登记"}'] if source else
-              ['- 原任务卡：验收报告没有写这一项对应哪张任务卡，需要你自己定位相关代码', f'- 起点分支：{base}（看板配置的默认修复分支）'])
+              ['- 原任务卡：' + (f'验收报告写的任务卡（{unknown}）在看板上找不到' if unknown else '验收报告没有写这一项对应哪张任务卡') + '，需要你自己定位相关代码',
+               f'- 起点分支：{base}（看板配置的默认修复分支）'])
     context = [f'- {label}：{_one_line(report.get(field, ""), 200)}' for label, field in (('验收人', 'by'), ('验收环境', 'site')) if report.get(field)]
     out = [f'# 修复：{source["id"] + " · " if source else ""}{_one_line(item["title"])}', '',
            '这张卡由看板「指派修复」生成。只修下面这一项验收问题，不要顺手改无关内容。', '',
@@ -166,12 +168,12 @@ def _body(source, key: str, base: str, report: dict, index: int, item: dict, sho
 
 
 def _names_known_card(root: Path, names: list[str]) -> bool:
-    """验收项写的卡号里有没有看板上真实存在的卡。"""
+    """验收项写的卡号里有没有看板上真实存在的卡；认法与指派时校验原卡一致：卡的 id 或「批次/文件名」。"""
     wanted = set(names)
     if not wanted:
         return False
     for sprint, path in bp.discover(root):
-        if f'{sprint}/{path.stem}' in wanted or path.stem in wanted:
+        if f'{sprint}/{path.stem}' in wanted:
             return True
         try:
             if str(bp.metadata(path, sprint)[0].get('id', '')) in wanted:
@@ -222,9 +224,10 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
     if source is None:
         repo, base = _repo(env), default_base(mode, env)
         if not base:
-            raise iv.InterventionError(409, 'missing_base', '这一项没有写对应的任务卡，看板也没有配置默认修复分支（V2_REPAIR_BASE），无法为修复建独立 worktree。')
+            raise iv.InterventionError(409, 'missing_base', '这一项没有对应看板上的任务卡，看板也没有配置默认修复分支（V2_REPAIR_BASE），无法为修复建独立 worktree。')
     else:
-        repo = str(source.get('repo') or _repo(env))
+        # 原卡的分支在看板自己的仓库里；V2_REPAIR_REPO 只管不挂原卡的修复
+        repo = str(source.get('repo') or env.get('V2_REPO_DIR') or '').strip()
         base = str(source.get('branch') or source.get('base') or '')
         if mode == 'enabled' and (not repo or not base or not BRANCH_RE.fullmatch(base) or not REPO_RE.fullmatch(repo)):
             raise iv.InterventionError(409, 'missing_repo', '原任务卡没有登记仓库或分支，无法为修复建独立 worktree。')

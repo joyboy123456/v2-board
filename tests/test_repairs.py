@@ -269,6 +269,30 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(self.code(payload, mode, env), expected, payload)
         self.assertFalse((self.root / 'fix').exists())
 
+    def test_named_card_without_repo_uses_the_board_repo_not_the_default_repair_repo(self):
+        self.card.write_text(SOURCE.replace('repo: /srv/example-repo\n', ''), encoding='utf-8')
+        self.assertEqual(self.code(self.payload(), env=self.based(V2_REPAIR_REPO='/srv/other-repo')), 'missing_repo')
+        self.assertFalse((self.root / 'fix').exists())
+        result = repairs.create(self.root, self.payload(), 'enabled', self.based(V2_REPAIR_REPO='/srv/other-repo', V2_REPO_DIR='/srv/board-repo'))
+        meta, _ = dispatcher_cards.parse((self.root / (result['repair_key'] + '.md')).read_text(encoding='utf-8'))
+        self.assertEqual((meta['repo'], meta['base']), ('/srv/board-repo', 'h/src'))
+
+    def test_card_names_the_board_does_not_know_are_kept_and_do_not_block_assignment(self):
+        # 「别的卡」写的 OTHER 看板上没有；alias 只是另一张卡的文件名，不是它的 id，前端和原卡校验都不认
+        (self.root / 'h/alias.md').write_text(SOURCE.replace('id: SRC', 'id: REAL'), encoding='utf-8')
+        other = self.root / 'reports/r3.md'
+        other.write_text('---\ntitle: 验收\ndate: 2026-01-03 10:00\n---\n## 按文件名写的卡\n卡：alias\n结论：未通过\n- 白屏。\n', encoding='utf-8')
+        for payload, name in ((self.loose(item_index=2), 'OTHER'),
+                              (self.loose(report_id='r3', expected_report_revision=sha(other), item_index=0), 'alias')):
+            result = repairs.create(self.root, payload, 'enabled', self.based())
+            meta, body = dispatcher_cards.parse((self.root / (result['repair_key'] + '.md')).read_text(encoding='utf-8'))
+            self.assertNotIn('repair_source', meta)
+            self.assertIn(f'验收报告写的任务卡（{name}）在看板上找不到', body)
+            self.assertNotIn('没有写这一项对应哪张任务卡', body)
+        # 写卡的 id 或「批次/文件名」仍然不能绕过那张卡
+        other.write_text(other.read_text(encoding='utf-8').replace('卡：alias', '卡：h/alias'), encoding='utf-8')
+        self.assertEqual(self.code(self.loose(report_id='r3', expected_report_revision=sha(other), item_index=0), env=self.based()), 'card_required')
+
     def test_repair_report_is_listed_for_the_repair_card_and_names_the_source(self):
         result = repairs.create(self.root, self.payload(), 'enabled', self.live)
         (self.root / 'reports/r2.md').write_text(
