@@ -116,7 +116,7 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
             <a className="dep" href={`?view=reports&report=${encodeURIComponent(r.id)}`}>看整份报告 →</a>
           </div>
           {r.shotsNote && items.every(it => !it.shots.length) && <p className="hint">{r.shotsNote}</p>}
-          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={[...children].reverse().find(x => itemHits(it, x)) || c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
+          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} cands={[[...children].reverse().find(x => itemHits(it, x)) || c]} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
         </section>
       ))}
     </div>
@@ -124,11 +124,22 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
 }
 
 /** 验收项上的「指派修复」：选执行器，把报错和截图整理成独立修复卡 */
-function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccReport; index: number; it: AccItem; open: (k: string) => void }) {
+const REPAIRABLE: Verdict[] = ['fail', 'partial', 'pending'];
+
+/** 整份报告页上，一个验收项可以基于哪些任务卡修：报告里写了卡号的那些，最近的修复卡排最前 */
+export function repairCands(b: Board, it: AccItem) {
+  const hits = b.cards.filter(c => itemHits(it, c));
+  return [...hits.filter(c => c.repairSource).reverse(), ...hits.filter(c => !c.repairSource)];
+}
+
+/** cands 为空表示报告没写这一项对应哪张任务卡：不关联任务卡，从看板配置的默认分支修 */
+function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[]; r: AccReport; index: number; it: AccItem; open: (k: string) => void }) {
   const iv = b.intervention;
   const list = iv?.executors || [];
   const preferred = list.find(x => x.browser === 'verified') || list.find(x => /codex/i.test(x.id)) || list[0];
   const [on, setOn] = useState(false);
+  const [pick, setPick] = useState('');
+  const c = cands.find(x => x.key === pick) || cands[0] as Card | undefined;
   const [executor, setExecutor] = useState(preferred?.id || '');
   const [notes, setNotes] = useState('');
   const [browser, setBrowser] = useState(true);
@@ -137,8 +148,19 @@ function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccRep
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState<{ repair_key: string; message: string } | null>(null);
-  const existing = b.cards.filter(x => x.repairSource === c.key);
+  const existing = c
+    ? b.cards.filter(x => x.repairSource === c.key)
+    : b.cards.filter(x => !x.repairSource && x.repairReport === r.id && x.repairItem === String(index));
   if (!iv?.repair) return iv?.mode === 'readonly' ? null : <p className="hint">这个看板没有开启「指派修复」。</p>;
+  const links = existing.length > 0 && <p className="repair-links">已有修复卡：{existing.map(x => <button key={x.key} className="cid" onClick={() => open(x.key)}>{x.id}</button>)}</p>;
+  if (!c && !iv.repairBase) return (
+    <div className="repair">
+      {links}
+      <p className="hint">{it.cards.length
+        ? `这一项写的任务卡（${it.cards.join('、')}）在看板上找不到，`
+        : '这份报告没有写这一项对应哪张任务卡，'}{iv.mode === 'demo' ? '演示模式下不能指派。' : '看板也还没有配置默认修复分支，暂时不能从这里指派。'}</p>
+    </div>
+  );
   const picked = list.find(x => x.id === executor);
   const submit = async () => {
     const warn = iv.mode === 'demo'
@@ -150,7 +172,7 @@ function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccRep
       const res = await fetch('/api/interventions/repair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(iv.mode === 'enabled' ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ card_key: c.key, expected_revision: c.cardRevision, report_id: r.id, expected_report_revision: r.revision, item_index: index, executor, instructions: notes, requires_browser: browser, test_mode: mode }),
+        body: JSON.stringify({ card_key: c?.key || '', expected_revision: c?.cardRevision || '', report_id: r.id, expected_report_revision: r.revision, item_index: index, executor, instructions: notes, requires_browser: browser, test_mode: mode }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setError(data.detail || `提交失败（${res.status}）`);
@@ -160,12 +182,19 @@ function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccRep
   };
   return (
     <div className="repair">
-      {existing.length > 0 && <p className="repair-links">已有修复卡：{existing.map(x => <button key={x.key} className="cid" onClick={() => open(x.key)}>{x.id}</button>)}</p>}
+      {links}
       {done ? <p className="repair-done">{done.message} <button className="cid" onClick={() => open(done.repair_key)}>{done.repair_key}</button></p>
         : !list.length ? <p className="hint">还没有可指派的执行器：需要在调度配置里登记执行器，并且该配置指向这个看板目录。</p>
         : !on ? <button className="repair-open" onClick={() => setOn(true)}><Wrench size={14} />指派修复</button>
         : <div className="repair-form">
-          <p className="repair-sum">会把这一项的结论、报错说明{it.shots.length ? `和 ${it.shots.length} 个截图/录屏` : ''}连同原卡 {c.id} 的分支信息一起交给 Agent，原卡不会被改动。</p>
+          <p className="repair-sum">会把这一项的结论、报错说明{it.shots.length ? `和 ${it.shots.length} 个截图/录屏` : ''}{c
+            ? `连同原卡 ${c.id} 的分支信息一起交给 Agent，原卡不会被改动。`
+            : `一起交给 Agent。报告没写这一项对应哪张任务卡，Agent 会从 ${iv.repairBase} 分支开独立 worktree 自己定位代码，验收报告不会被改动。`}</p>
+          {cands.length > 1 && <label>基于哪张任务卡
+            <select value={c?.key} onChange={e => setPick(e.target.value)}>
+              {cands.map(x => <option key={x.key} value={x.key}>{x.id} · {x.title}</option>)}
+            </select>
+          </label>}
           <label>交给谁
             <select value={executor} onChange={e => setExecutor(e.target.value)}>
               {list.map(x => <option key={x.id} value={x.id}>{x.name} · 浏览器验收{x.browser === 'verified' ? '已确认' : '未确认'}</option>)}
@@ -229,7 +258,11 @@ export default function Reports({ b, open, sel, setSel }: { b: Board; open: (k: 
           {r.shotsNote && <p className="hint"><Camera size={13} />{r.shotsNote}</p>}
         </header>
         <div className="acc-items">
-          {items.map((it, i) => <ItemView key={r.id + i} it={it} cards={b.cards} open={open} />)}
+          {items.map(it => {
+            const index = r.items.indexOf(it);
+            return <ItemView key={r.id + index} it={it} cards={b.cards} open={open}
+              repair={REPAIRABLE.includes(it.verdict) ? <RepairForm b={b} cands={repairCands(b, it)} r={r} index={index} it={it} open={open} /> : undefined} />;
+          })}
           {!items.length && <div className="empty">这份报告里没有问题项。</div>}
         </div>
       </section>

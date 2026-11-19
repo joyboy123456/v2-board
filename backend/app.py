@@ -122,7 +122,7 @@ def card_json(c):
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
         answerHistory=interventions.answer_history(c['body']), cardRevision=c['card_revision'],
-        repairSource=str(d.get('repair_source', '') or ''),
+        repairSource=str(d.get('repair_source', '') or ''), repairReport=str(d.get('repair_report', '') or ''), repairItem=str(d.get('repair_item', '') or ''),
     )
 
 
@@ -394,6 +394,7 @@ def intervention_state():
     state = dict(interventions.capabilities(BOARD))
     state['repair'] = repairs.enabled(state['mode'])
     state['executors'] = repairs.executors(BOARD, state['mode']) if state['repair'] else []
+    state['repairBase'] = repairs.default_base(state['mode'])
     return state
 
 

@@ -53,6 +53,12 @@ by: tester
 卡：OTHER
 结论：未通过
 - 无关。
+
+## 没写卡号
+结论：未通过
+- 首页白屏。
+
+![白屏](shots/a.png)
 '''
 
 
@@ -215,6 +221,53 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(meta['dispatch'], 'held')
         self.assertNotIn('repo', meta)
         self.assertEqual(self.code(self.payload(executor='codex-a'), 'demo', self.demo), 'unknown_executor')
+
+    def loose(self, **over):
+        return self.payload(**{'card_key': '', 'expected_revision': '', 'item_index': 3, **over})
+
+    def based(self, **over):
+        return {**self.live, 'V2_REPAIR_BASE': 'main', 'V2_REPAIR_REPO': '/srv/example-repo', **over}
+
+    def test_item_without_a_card_is_repaired_from_the_configured_default_branch(self):
+        before = self.report.read_bytes()
+        result = repairs.create(self.root, self.loose(), 'enabled', self.based())
+        self.assertTrue(result['created'])
+        self.assertEqual(self.report.read_bytes(), before)
+        text = (self.root / (result['repair_key'] + '.md')).read_text(encoding='utf-8')
+        meta, body = dispatcher_cards.parse(text)
+        self.assertEqual((meta['dispatch'], meta['executor'], meta['repo'], meta['base']), ('queued', 'codex-a', '/srv/example-repo', 'main'))
+        self.assertEqual((meta['repair_report'], meta['repair_item']), ('r1', '3'))
+        self.assertNotIn('repair_source', meta)
+        self.assertEqual(meta['title'], '修复：没写卡号')
+        self.assertIn('首页白屏', body)
+        self.assertIn(str(self.root / 'reports/shots/a.png'), body)
+        self.assertIn('验收报告没有写这一项对应哪张任务卡', body)
+        self.assertIn('- 验收人：tester', body)
+        self.assertIn(f'「卡：」一行写 {result["repair_id"]}，', body)
+        again = repairs.create(self.root, self.loose(executor='kiro'), 'enabled', self.based())
+        self.assertEqual((again['repair_key'], again['created']), (result['repair_key'], False))
+        # 看板把它读成一张不挂原卡的修复卡
+        data = bp.metadata(self.root / (result['repair_key'] + '.md'), 'fix')[0]
+        self.assertEqual((data.get('repair_source'), data['repair_report']), (None, 'r1'))
+
+    def test_item_without_a_card_needs_a_configured_base_and_cannot_skip_a_named_card(self):
+        self.assertEqual(repairs.default_base('enabled', self.based()), 'main')
+        self.assertEqual(repairs.default_base('enabled', self.live), '')
+        self.assertEqual(repairs.default_base('demo', dict(self.demo, V2_REPAIR_BASE='main', V2_REPAIR_REPO='/srv/example-repo')), '')
+        cases = [
+            (self.loose(), self.live, 'enabled', 'missing_base'),
+            (self.loose(), self.based(V2_REPAIR_BASE='--upload-pack=x'), 'enabled', 'missing_base'),
+            (self.loose(), self.based(V2_REPAIR_REPO='relative/repo'), 'enabled', 'missing_base'),
+            (self.loose(item_index=0), self.based(), 'enabled', 'card_required'),
+            (self.loose(item_index=1), self.based(), 'enabled', 'card_required'),
+            (self.loose(expected_revision=sha(self.card)), self.based(), 'enabled', 'invalid_card_key'),
+            (self.payload(expected_revision=''), self.based(), 'enabled', 'invalid_revision'),
+            (self.payload(item_index=3), self.based(), 'enabled', 'item_mismatch'),
+            (self.loose(executor='demo-codex'), self.demo, 'demo', 'not_demo_card'),
+        ]
+        for payload, env, mode, expected in cases:
+            self.assertEqual(self.code(payload, mode, env), expected, payload)
+        self.assertFalse((self.root / 'fix').exists())
 
     def test_repair_report_is_listed_for_the_repair_card_and_names_the_source(self):
         result = repairs.create(self.root, self.payload(), 'enabled', self.live)
