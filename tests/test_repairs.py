@@ -136,6 +136,14 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(len(list((self.root / 'fix').iterdir())), 1)
         self.assertIn('executor: "codex-a"', (self.root / (first['repair_key'] + '.md')).read_text(encoding='utf-8'))
 
+    def test_overlapping_submissions_for_one_item_do_not_collide(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(8) as pool:
+            results = list(pool.map(lambda _: repairs.create(self.root, self.payload(), 'enabled', self.live), range(24)))
+        self.assertEqual(sum(r['created'] for r in results), 1)
+        self.assertEqual(len({r['repair_key'] for r in results}), 1)
+        self.assertEqual([p.name for p in (self.root / 'fix').iterdir()], [results[0]['repair_id'] + '.md'])
+
     def test_stale_or_mismatched_requests_are_rejected_without_writing(self):
         cases = [
             (self.payload(expected_revision='0' * 64), 'stale_revision'),

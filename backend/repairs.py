@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import unicodedata
 from urllib.parse import urlsplit
 
@@ -188,7 +189,7 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
     if folder.is_symlink():
         raise iv.InterventionError(409, 'unsafe_target', '修复目录不安全，未写入。')
     folder.mkdir(exist_ok=True)
-    final, temp = folder / f'{repair_id}.md', folder / f'.{repair_id}.{os.getpid()}.tmp'
+    final, temp = folder / f'{repair_id}.md', folder / f'.{repair_id}.{os.getpid()}.{secrets.token_hex(6)}.tmp'
     created = True
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o644)
     try:
