@@ -822,3 +822,23 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .dr-meta dd code { font-size: 12.5px; }
 .node-run a, .node-run a.dep { text-decoration: none; }
 .node-run a:hover { text-decoration: underline; }
+
+/* 指派修复 */
+.repair { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-2); display: flex; flex-direction: column; gap: 10px; }
+.repair-open { align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line-2); background: #202020; font-size: 13px; font-weight: 560; }
+.repair-open:hover { border-color: var(--blue); color: #9dd0ff; }
+.repair-form { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line-2); border-radius: 12px; background: #1a1a1a; }
+.repair-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--sub); }
+.repair-form select, .repair-form textarea, .repair-form input[type=password] { width: 100%; border: 1px solid var(--line-2); border-radius: 8px; padding: 9px 11px; background: #141414; color: var(--ink); font: inherit; }
+.repair-form textarea { min-height: 72px; resize: vertical; line-height: 1.55; }
+.repair-form .repair-check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+.repair-sum, .repair-links, .repair-done, .repair-warn, .repair-err { margin: 0; font-size: 13px; line-height: 1.6; color: var(--sub); }
+.repair-links, .repair-done { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.repair-done { color: #9fe0b1; }
+.repair-warn { color: #ffd08c; }
+.repair-err { color: #ffc1c1; }
+.repair .cid { border: 1px solid var(--line-2); border-radius: 6px; padding: 0 6px; }
+.repair-act { display: flex; justify-content: flex-end; gap: 8px; }
+.repair-act button { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line-2); font-size: 13px; }
+.repair-act button.primary { border-color: rgba(51,156,255,.5); background: rgba(51,156,255,.14); color: #9dd0ff; }
+.repair-act button:disabled { opacity: .45; cursor: not-allowed; }

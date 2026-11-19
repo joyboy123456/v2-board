@@ -17,7 +17,7 @@ export interface Card {
   last: string; stamp: string; stampFromFile: boolean; source: string;
   reports: Report[]; commits: Commit[]; gitNote: string; baseline: string;
   decisions: Decision[]; body: string; progress: string; legacy: boolean;
-  dispatch?: string; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; cardRevision: string;
+  dispatch?: string; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; cardRevision: string; repairSource?: string;
 }
 export interface Question { id: string; time: string; who: string; text: string; options: string[] }
 export interface AnswerHistory { id: string; time: string; actor: string; answer: string }
@@ -29,10 +29,11 @@ export interface Link { from: string; to: string; inferred: boolean; note: strin
 
 export interface Board {
   timeline: Milestone[]; summary: { review_today: number; accepted_today: number; review_total: number; accepted_total: number }; links: Link[]; cards: Card[]; errors: string[]; sprints: Sprint[]; version: string; now: string; sys: Sys; dispatch?: { slots: number }; reports?: AccReport[];
-  intervention: { mode: 'readonly' | 'demo' | 'enabled'; reason?: string };
+  intervention: { mode: 'readonly' | 'demo' | 'enabled'; reason?: string; repair?: boolean; executors?: Executor[] };
 }
 
 export type Verdict = 'pass' | 'fail' | 'partial' | 'pending' | 'note';
 export interface AccShot { alt: string; src: string; missing: boolean; kind?: 'image' | 'video' }
 export interface AccItem { title: string; cards: string[]; verdict: Verdict; verdictText: string; text: string; shots: AccShot[] }
-export interface AccReport { id: string; title: string; date: string; by: string; site: string; shotsNote: string; intro: string; items: AccItem[]; counts: Partial<Record<Verdict, number>>; cards: string[] }
+export interface Executor { id: string; name: string; browser: 'verified' | 'unknown' }
+export interface AccReport { id: string; revision: string; title: string; date: string; by: string; site: string; shotsNote: string; intro: string; items: AccItem[]; counts: Partial<Record<Verdict, number>>; cards: string[] }

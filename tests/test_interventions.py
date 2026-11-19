@@ -185,6 +185,19 @@ class InterventionTest(unittest.TestCase):
         self.assertEqual(revision, digest(self.card))
         self.assertIn('First question?', body)
 
+    def test_dispatcher_parser_reads_board_written_answers(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dispatcher'))
+        import cards as dispatcher_cards
+        iv.write_answer(self.root, self.payload('Q1', 'first | with pipe'), 'demo', self.demo_env)
+        meta, body = dispatcher_cards.parse(self.card.read_text(encoding='utf-8'))
+        self.assertEqual(meta['dispatch'], 'asking')
+        self.assertEqual(list(dispatcher_cards.open_questions(body)), ['Q2'])
+        iv.write_answer(self.root, self.payload('Q2', 'second'), 'demo', self.demo_env)
+        meta, body = dispatcher_cards.parse(self.card.read_text(encoding='utf-8'))
+        self.assertEqual(meta['dispatch'], 'answered')
+        self.assertFalse(dispatcher_cards.open_questions(body))
+        self.assertEqual(set(dispatcher_cards.answers(body)), {'Q1', 'Q2'})
+
     def test_answer_history_is_visible_after_questions_are_answered(self):
         result = self.write(self.payload('Q1', 'saved answer'))
         history = iv.answer_history(self.card.read_text(encoding='utf-8').split('---\n', 2)[-1])
@@ -233,10 +246,29 @@ class DemoSetupGuardTest(unittest.TestCase):
                 contextlib.redirect_stdout(output):
             demo_setup.main()
         self.assertEqual((root / demo_setup.MARKER).read_bytes(), demo_setup.MARKER_CONTENT)
-        self.assertEqual(len(list((root / 'h').glob('*.md'))), 4)
+        self.assertEqual(len(list((root / 'h').glob('*.md'))), 5)
+        self.assertTrue((root / demo_setup.SHOT).read_bytes().startswith(b'\x89PNG'))
+        self.assertEqual([p.name for p in (root / 'reports').glob('*.md')], ['2026-01-01-1000-demo.md'])
         self.assertIn('## 待回答', (root / 'h/01.md').read_text(encoding='utf-8'))
         self.assertIn('## 回答', (root / 'h/04.md').read_text(encoding='utf-8'))
         self.assertIn('ISOLATED_DEMO_ROOT=', output.getvalue())
+
+    def test_unmarked_nonempty_roots_and_special_files_are_rejected(self):
+        root = self.home / 'preview'
+        (root / 'h').mkdir(parents=True)
+        (root / 'h/01.md').write_text('could be real data', encoding='utf-8')
+        with patch('pathlib.Path.home', return_value=self.home):
+            with self.assertRaises(SystemExit):
+                demo_setup.validate_root(root, custom=True, force=True)
+            (root / demo_setup.MARKER).write_bytes(b'wrong marker\n')
+            with self.assertRaises(SystemExit):
+                demo_setup.validate_root(root, custom=True, force=True)
+            (root / demo_setup.MARKER).write_bytes(demo_setup.MARKER_CONTENT)
+            self.assertEqual(demo_setup.validate_root(root, custom=True, force=True), root)
+            os.mkfifo(root / 'h/02.md')
+            with self.assertRaises(SystemExit):
+                demo_setup.validate_root(root, custom=True, force=True)
+        self.assertEqual((root / 'h/01.md').read_text(encoding='utf-8'), 'could be real data')
 
     def test_roots_outside_home_or_inside_repository_are_rejected(self):
         with patch('pathlib.Path.home', return_value=self.home):

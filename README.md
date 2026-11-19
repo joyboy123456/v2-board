@@ -153,6 +153,29 @@ nice -n 19 cp -p /usr/local/bin/board-report.bak-20261117 /usr/local/bin/board-r
 
 SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 REST `after_seq` 补齐；前端按 seq 合并去重，不依赖进程重启后会重置的 SSE id。慢消费者溢出重放窗口会收到 `resync`，重新读取快照与消息。日志 JSON 中提取 agent_message 文本；API 和持久结构化消息屏蔽常见 token、密钥、Authorization、密码、私钥、URL userinfo，原始日志只保留在宿主数据目录中。接口没有写操作。
 
+## 在看板上干预（默认关闭）
+
+看板默认只读。写入只有两件事，都只写任务卡文件，不直接启动、停止或恢复任何 Agent，后续由 dispatcher 按卡片状态处理。
+
+| 接口 | 作用 |
+| --- | --- |
+| `POST /api/interventions/answer` | 回答 `dispatch: asking` 卡片里的问题：追加到 `## 回答`，全部答完才把 `dispatch` 改成 `answered` |
+| `POST /api/interventions/repair` | 把一条未通过、部分通过或未完成的验收项指派给某个执行器：在 `fix/` 下新建一张 `REPAIR-*` 修复卡，原卡和原报告不动 |
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `V2_INTERVENTION_MODE` | `readonly`（默认）、`demo` 或 `enabled`；后两者都必须同时显式设置 `V2_BOARD_DIR` |
+| `V2_INTERVENTION_TOKEN` | `enabled` 模式必填，请求用 `Authorization: Bearer` 携带；不写进卡片和日志 |
+| `V2_REPAIR_ENABLED=1` | 在 `enabled` 模式下另外开启指派修复 |
+| `V2_BROWSER_EXECUTORS` | 逗号分隔的执行器名；只有列在这里的才标「浏览器验收已确认」，其余标「未确认」 |
+
+- 请求都校验同源、JSON 类型和大小；回答和指派都带卡片（及报告）的 SHA-256 版本，内容变了就拒绝并提示刷新。
+- 修复卡的报错文字和截图由服务端从验收报告里读，不采信浏览器传来的内容；同一验收项重复指派只会有一张卡。
+- 执行器列表取自 `DISPATCH_CONFIG` 里 `executors` 的键名，且该配置的 `board` 必须就是本看板目录；命令和配置内容不外传。
+- 修复卡写 `dispatch: queued`，带独立分支 `d/repair-*`，以原卡分支为基线；dispatcher 有空槽位时为它建独立 worktree。原卡需要登记分支，仓库取原卡的 `repo` 或 `V2_REPO_DIR`。
+- 修复卡正文带云浏览器验收步骤（`scripts/cloud-browser/run.sh`，真实接口或 `--fixture`）和回收沙盒的要求。修复后的验收报告在「卡：」一行同时写修复卡和原卡编号，就会显示在原卡的验收页签里。
+- `demo` 模式只在带标记文件的合成目录里生效：`python3 scripts/setup_intervention_demo.py` 生成合成卡片、一份合成验收报告和截图；演示里的修复卡是 `held` 状态，不会被执行。
+
 ## 验证
 
 ```sh

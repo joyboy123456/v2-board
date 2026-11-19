@@ -1,5 +1,6 @@
+import type React from 'react';
 import { useEffect, useState } from 'react';
-import { ClipboardCheck, CircleCheck, CircleX, CircleDashed, CircleAlert, ImageOff, X, Globe, User, Camera, Video } from 'lucide-react';
+import { Wrench, ClipboardCheck, CircleCheck, CircleX, CircleDashed, CircleAlert, ImageOff, X, Globe, User, Camera, Video } from 'lucide-react';
 import type { AccItem, AccReport, AccShot, Board, Card, Verdict } from './types';
 import { md } from './lib';
 
@@ -16,8 +17,8 @@ export function itemHits(it: AccItem, c: Card) {
   return it.cards.some(x => x === c.id || x === c.key);
 }
 
-export function reportsFor(reports: AccReport[] | undefined, c: Card) {
-  return (reports || []).map(r => ({ r, items: r.items.filter(it => itemHits(it, c)) })).filter(x => x.items.length);
+export function reportsFor(reports: AccReport[] | undefined, c: Card, children: Card[] = []) {
+  return (reports || []).map(r => ({ r, items: r.items.filter(it => itemHits(it, c) || children.some(x => itemHits(it, x))) })).filter(x => x.items.length);
 }
 
 function Lightbox({ shot, close }: { shot: AccShot; close: () => void }) {
@@ -59,7 +60,7 @@ function Shots({ shots }: { shots: AccShot[] }) {
   );
 }
 
-export function ItemView({ it, cards, open, hideCards }: { it: AccItem; cards?: Card[]; open?: (k: string) => void; hideCards?: boolean }) {
+export function ItemView({ it, cards, open, hideCards, repair }: { it: AccItem; cards?: Card[]; open?: (k: string) => void; hideCards?: boolean; repair?: React.ReactNode }) {
   return (
     <article className={`acc-item v-${it.verdict}`}>
       <header>
@@ -72,6 +73,7 @@ export function ItemView({ it, cards, open, hideCards }: { it: AccItem; cards?: 
       </header>
       {it.text && <div className="md acc-text" dangerouslySetInnerHTML={{ __html: md(it.text) }} />}
       <Shots shots={it.shots} />
+      {repair}
     </article>
   );
 }
@@ -95,7 +97,7 @@ function Meta({ r }: { r: AccReport }) {
 
 /** 抽屉里「验收」页签：只列这张卡相关的检查项 */
 export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: string) => void }) {
-  const hits = reportsFor(b.reports, c);
+  const hits = reportsFor(b.reports, c, b.cards.filter(x => x.repairSource === c.key));
   if (!hits.length) return <div className="empty"><ClipboardCheck size={16} />这张卡还没有验收报告。</div>;
   return (
     <div className="acc-card">
@@ -107,9 +109,78 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
             <a className="dep" href={`?view=reports&report=${encodeURIComponent(r.id)}`}>看整份报告 →</a>
           </div>
           {r.shotsNote && items.every(it => !it.shots.length) && <p className="hint">{r.shotsNote}</p>}
-          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} />)}
+          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
         </section>
       ))}
+    </div>
+  );
+}
+
+/** 验收项上的「指派修复」：选执行器，把报错和截图整理成独立修复卡 */
+function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccReport; index: number; it: AccItem; open: (k: string) => void }) {
+  const iv = b.intervention;
+  const list = iv?.executors || [];
+  const preferred = list.find(x => x.browser === 'verified') || list.find(x => /codex/i.test(x.id)) || list[0];
+  const [on, setOn] = useState(false);
+  const [executor, setExecutor] = useState(preferred?.id || '');
+  const [notes, setNotes] = useState('');
+  const [browser, setBrowser] = useState(true);
+  const [mode, setMode] = useState<'real' | 'fixture'>('real');
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState<{ repair_key: string; message: string } | null>(null);
+  const existing = b.cards.filter(x => x.repairSource === c.key);
+  if (!iv?.repair) return iv?.mode === 'readonly' ? null : <p className="hint">这个看板没有开启「指派修复」。</p>;
+  const picked = list.find(x => x.id === executor);
+  const submit = async () => {
+    const warn = iv.mode === 'demo'
+      ? '确认生成演示修复卡？只写合成数据，不会启动任何 Agent。'
+      : `确认把这一项指派给 ${executor} 修复？会新建一张排队的修复卡，dispatcher 有空槽位时会启动 Agent${browser && mode === 'real' ? '，真实接口验收会产生云沙盒和模型费用' : ''}。`;
+    if (!window.confirm(warn)) return;
+    setBusy(true); setError('');
+    try {
+      const res = await fetch('/api/interventions/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(iv.mode === 'enabled' ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ card_key: c.key, expected_revision: c.cardRevision, report_id: r.id, expected_report_revision: r.revision, item_index: index, executor, instructions: notes, requires_browser: browser, test_mode: mode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setError(data.detail || `提交失败（${res.status}）`);
+      else setDone(data);
+    } catch { setError('网络错误，未提交。'); }
+    setBusy(false);
+  };
+  return (
+    <div className="repair">
+      {existing.length > 0 && <p className="repair-links">已有修复卡：{existing.map(x => <button key={x.key} className="cid" onClick={() => open(x.key)}>{x.id}</button>)}</p>}
+      {done ? <p className="repair-done">{done.message} <button className="cid" onClick={() => open(done.repair_key)}>{done.repair_key}</button></p>
+        : !on ? <button className="repair-open" onClick={() => setOn(true)}><Wrench size={14} />指派修复</button>
+        : <div className="repair-form">
+          <p className="repair-sum">会把这一项的结论、报错说明{it.shots.length ? `和 ${it.shots.length} 个截图/录屏` : ''}连同原卡 {c.id} 的分支信息一起交给 Agent，原卡不会被改动。</p>
+          <label>交给谁
+            <select value={executor} onChange={e => setExecutor(e.target.value)}>
+              {list.map(x => <option key={x.id} value={x.id}>{x.name} · 浏览器验收{x.browser === 'verified' ? '已确认' : '未确认'}</option>)}
+            </select>
+          </label>
+          {browser && picked?.browser !== 'verified' && <p className="repair-warn">这个执行器能否操作浏览器还没有确认，可能跑不了云浏览器验收。</p>}
+          <label className="repair-check"><input type="checkbox" checked={browser} onChange={e => setBrowser(e.target.checked)} />修完后用云沙盒浏览器验收</label>
+          {browser && <label>验收接口
+            <select value={mode} onChange={e => setMode(e.target.value as 'real' | 'fixture')}>
+              <option value="real">真实接口（8 核 16G，会产生费用）</option>
+              <option value="fixture">假接口 --fixture（4 核 8G）</option>
+            </select>
+          </label>}
+          <label>补充说明（可不填）
+            <textarea value={notes} maxLength={2000} onChange={e => setNotes(e.target.value)} placeholder="比如：先看画布节点的图片加载逻辑" />
+          </label>
+          {iv.mode === 'enabled' && <label>写入令牌<input type="password" value={token} autoComplete="off" onChange={e => setToken(e.target.value)} /></label>}
+          {error && <p className="repair-err">{error}</p>}
+          <div className="repair-act">
+            <button onClick={() => setOn(false)} disabled={busy}>取消</button>
+            <button className="primary" onClick={submit} disabled={busy || !executor || (iv.mode === 'enabled' && !token)}>{busy ? '提交中…' : '确认指派'}</button>
+          </div>
+        </div>}
     </div>
   );
 }
