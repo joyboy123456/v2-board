@@ -873,3 +873,13 @@ body { font-family: var(--sans); }
 .agent-heading h2 { font-family: var(--serif); font-weight: 500; font-size: 26px; letter-spacing: -.01em; }
 a, .dep { color: var(--clay-ink); }
 :focus-visible { outline: 2px solid var(--clay); outline-offset: 2px; }
+
+/* 单栏排版时侧栏不再吸顶，否则会盖在后面的内容上 */
+@media (max-width: 1099px) {
+  .rail, .rail-l, .rail-r { position: static; max-height: none; overflow: visible; }
+}
+/* 两栏排版：吸顶的左栏占满两行，现场栏只放在右列，滚动时不再被左栏盖住 */
+@media (min-width: 1100px) and (max-width: 1499px) {
+  .rail-l { grid-row: 1 / span 2; }
+  .rail-r { grid-column: 2; }
+}
