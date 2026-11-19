@@ -169,8 +169,10 @@ def add_message(path, text, actor='user'):
         meta, body = parse(box[0])
         mid = f'M{len(messages(body)) + 1}'
         box[0] = _append(box[0], M_HEAD, f'- [{mid}] {stamp()} | {actor}: {" ".join(str(text).split())}')
-        if meta.get('dispatch') in ('done', 'failed') or (meta.get('dispatch') == 'held' and meta.get('stopped')):
+        if meta.get('dispatch') in ('done', 'failed'):
             box[0] = set_keys(box[0], dispatch='answered')
+        elif meta.get('dispatch') == 'held' and meta.get('stopped'):
+            box[0] = drop_keys(set_keys(box[0], dispatch='answered'), 'stopped')  # 标记只管这一次；之后再被手工暂停就不会被留言唤醒
     return mid
 
 

@@ -20,6 +20,9 @@ from pathlib import Path
 mode, card, final, prompt = sys.argv[1:5]
 if mode == "deaf":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if mode == "orphan":  # 另起会话的子进程：父进程退出后就不在进程树里了
+    kid = subprocess.Popen([sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"], start_new_session=True)
+    Path("orphan.pid").write_text(str(kid.pid))
 print(json.dumps({"type": "thread.started", "thread_id": "T-" + card}), flush=True)
 Path(final).write_text("final " + mode)
 Path(os.getcwd(), "prompt-" + mode + ".txt").write_text(prompt)
@@ -27,7 +30,7 @@ if mode == "ok":
     sys.exit(0)
 if mode == "fail":
     sys.exit(3)
-if mode in ("sleep", "deaf"):
+if mode in ("sleep", "deaf", "orphan"):
     time.sleep(30)
 if mode == "ask":
     subprocess.run([sys.executable, os.environ["BOARD_ASK"], card, "用哪种方案？", "--option", "甲", "--option", "乙"], check=True)
@@ -50,7 +53,7 @@ class DispatcherTest(unittest.TestCase):
         fake.write_text(FAKE)
         py = sys.executable
         execs = {}
-        for mode in ('ok', 'fail', 'ask', 'sleep', 'deaf'):
+        for mode in ('ok', 'fail', 'ask', 'sleep', 'deaf', 'orphan'):
             execs[mode] = {'agent': f'fake {mode}', 'cmd': [py, str(fake), mode, '{card}', '{final}', '{prompt}'],
                            'resume': [py, str(fake), 'resume', '{card}', '{final}', 'RESUMED {session} {prompt}']}
         self.cfg = {'board': str(self.board), 'state': str(self.tmp / 'state'), 'slots': 2, 'min_free_mem_gb': 0,
@@ -198,6 +201,39 @@ class DispatcherTest(unittest.TestCase):
         self.settle(d, lambda: self.state('S2') == 'held')
         self.assertFalse(any(Dispatcher.alive(p) for p in pids))
 
+    def test_stop_also_ends_detached_children_and_never_touches_a_recycled_pid(self):
+        self.cfg['stop_grace_seconds'] = .5
+        path = self.write('S5', 'orphan')
+        d = Dispatcher(self.cfg)
+        d.tick()
+        self.started(d, 'S5')
+        orphan = int(Path(d.rec('S5')['worktree'], 'orphan.pid').read_text())
+        cards.update(path, stop=cards.stamp())
+        self.settle(d, lambda: self.state('S5') == 'held')
+        self.assertTrue(Dispatcher.alive(orphan))  # 父进程已经退了，它不理 TERM
+        cards.add_message(path, '继续')
+        d.tick()
+        self.assertEqual(self.state('S5'), 'answered')  # 残留没清完之前不重新开跑
+        end = time.time() + 10
+        while Dispatcher.alive(orphan) and time.time() < end:
+            d.tick()
+            time.sleep(.1)
+        self.assertFalse(Dispatcher.alive(orphan))
+        self.settle(d, lambda: self.state('S5') == 'done')
+        self.assertNotIn('stop_pids', {k: v for k, v in d.rec('S5').items() if v})
+        # 重启后接手的记录里，pid 已经被别的进程占用：不发信号，只把卡收尾
+        other = subprocess.Popen(['sleep', '30'])
+        try:
+            stale = self.write('S6', 'sleep', 'stop: "2026-11-19 23:00:00 CST"\n')
+            cards.update(stale, dispatch='running')
+            d.save('S6', pid=other.pid, pid_start='1', attempt=1)
+            d.tick()
+            self.assertEqual(self.state('S6'), 'held')
+            self.assertIsNone(other.poll())
+        finally:
+            other.kill()
+            other.wait()
+
     def test_stop_before_start_and_stale_requests(self):
         queued = self.write('S3', 'ok', 'stop: "2026-11-19 23:00:00 CST"\n')
         done = self.write('S4', 'ok')
@@ -206,6 +242,12 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(self.state('S3'), 'held')  # 还在排队就被停止：不启动
         self.assertEqual(d.rec('S3'), {})
         self.assertIn('stopped', cards.read(queued)[0])
+        # 没跑过的卡被停止后收到留言：没有会话可续，按第一轮给完整任务
+        d.cfg['executors']['ok']['resume'] = [part for part in d.cfg['executors']['ok']['resume'] if '{session}' not in part]
+        cards.add_message(queued, '现在可以开始了')
+        self.settle(d, lambda: self.state('S3') == 'done')
+        self.assertNotEqual(d.rec('S3')['mode'], 'resume')
+        self.assertNotIn('stopped', cards.read(queued)[0])
         # 这一轮自己跑完之后才到的停止请求：什么都不停，只把请求清掉
         cards.update(done, stop=cards.stamp())
         d.tick()

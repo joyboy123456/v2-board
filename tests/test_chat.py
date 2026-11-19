@@ -107,6 +107,8 @@ class ChatTest(unittest.TestCase):
     def test_message_reopens_a_stopped_session_but_not_a_hand_held_one(self):
         self.path.write_text(card('held', 'stopped: "2026-11-19 23:00:00 CST"\n'))
         self.assertEqual(self.send()['dispatch'], 'answered')
+        self.assertNotIn('stopped', self.path.read_text())
+        self.assertIn('dispatch: "answered"', self.path.read_text())
         self.path.write_text(card('held'))
         self.assertEqual(self.send()['dispatch'], 'held')
 

@@ -262,6 +262,8 @@ def write_message(root: Path, payload: dict, mode: str, environ=None) -> dict:
         if mode == 'enabled' and (state in REOPEN or (state == 'held' and meta.get('stopped'))):
             dispatch = 'answered'
             head = _with_dispatch(head, line, dispatch)
+            if state == 'held':  # stopped 标记只管这一次；之后再被手工暂停就不会被留言唤醒
+                head = re.sub(r'(?m)^[ \t]*stopped[ \t]*:[^\r\n]*(?:\r?\n|\Z)', '', head).rstrip('\r\n')
         updated, data = _save(card_fd, raw, text, front, head, body)
         if mode == 'demo':
             note = '演示留言已记录；不会连接或启动 Agent。'

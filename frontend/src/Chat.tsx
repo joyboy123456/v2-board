@@ -207,7 +207,10 @@ function Conversation({ agent, session, mode, feed, token, setToken, refresh, ju
   const stop = () => {
     if (!card || busy) return;
     if (needToken && !token.trim()) { setNote(''); setFailure({ status: 400, detail: '先在下面填写入令牌，再点停止。' }); return; }
-    if (!window.confirm('确认停止？会结束 ' + agent.name + ' 正在跑的这一轮。已经改的文件、分支和会话都保留，之后发消息可以接着聊。')) return;
+    const ask = mode === 'demo' ? '确认停止？演示模式只把这个会话标成暂停，不会碰任何真实的 Agent。'
+      : card.dispatch === 'running' ? '确认停止？会结束 ' + agent.name + ' 正在跑的这一轮。已经改的文件、分支和会话都保留，之后发消息可以接着聊。'
+      : '确认停止？这个会话还没开始跑这一轮，停止后它不会启动；之后发消息可以让它继续。';
+    if (!window.confirm(ask)) return;
     submit('/api/interventions/stop', { card_key: card.key }, 'stop', () => {});
   };
   const latest = runs[runs.length - 1];
