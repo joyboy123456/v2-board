@@ -50,6 +50,12 @@ class AcceptanceTest(unittest.TestCase):
         for phrase in ('无法通过', '没有通过', '没通过', '不通过'):
             self.assertEqual(acceptance.verdict_of(phrase), 'fail')
 
+    def test_longer_fence_is_not_closed_by_a_shorter_one_inside_it(self):
+        body = '## 甲\n卡：A\n结论：未通过\n````md\n```\n## 假标题\n```\n````\n## 乙\n卡：B\n结论：通过\n'
+        (self.root / 'reports' / 'r.md').write_text(body, encoding='utf-8')
+        items = acceptance.collect(self.root)[0][0]['items']
+        self.assertEqual([(it['title'], it['verdict']) for it in items], [('甲', 'fail'), ('乙', 'pass')])
+
     def test_symlinked_reports_are_not_read(self):
         secret = Path(self.tmp.name) / 'outside.md'
         secret.write_text('## 外部\n卡：X\n结论：未通过\nTOP-SECRET\n', encoding='utf-8')

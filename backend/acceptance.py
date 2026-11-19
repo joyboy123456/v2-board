@@ -63,12 +63,12 @@ def split_items(body: str):
     """按二级标题分段；围栏代码块里的 `##` 不算标题。返回 [引言, 条目, ...]，条目不含开头的 `## `。"""
     parts, current, fence = [], [], ''
     for line in body.splitlines():
-        mark = re.match(r'^\s*(`{3,}|~{3,})', line)
+        mark = re.match(r'^\s*(`{3,}|~{3,})(.*)$', line)
         if mark:
             if not fence:
-                fence = mark.group(1)[0]
-            elif mark.group(1)[0] == fence:
-                fence = ''
+                fence = mark.group(1)
+            elif mark.group(1)[0] == fence[0] and len(mark.group(1)) >= len(fence) and not mark.group(2).strip():
+                fence = ''  # 收尾围栏要同一种符号、不短于开头，后面不带说明文字
         heading = None if fence else re.match(r'^##\s+(.*)$', line)
         if heading:
             parts.append('\n'.join(current))
