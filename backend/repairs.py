@@ -43,6 +43,11 @@ def _repo(env) -> str:
     return str(env.get('V2_REPAIR_REPO') or env.get('V2_REPO_DIR') or '').strip()
 
 
+def _board_repo(env) -> str:
+    """看板自己的仓库在 dispatcher 所在机器上的路径；容器里挂载的路径和宿主不一样时用 V2_REPO_HOST_DIR 写宿主路径。"""
+    return str(env.get('V2_REPO_HOST_DIR') or env.get('V2_REPO_DIR') or '').strip()
+
+
 def default_base(mode: str, environ=None) -> str:
     """验收项没写任务卡时修复分支的起点；管理员没配 V2_REPAIR_BASE 就不能这样指派。"""
     env = os.environ if environ is None else environ
@@ -227,7 +232,7 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
             raise iv.InterventionError(409, 'missing_base', '这一项没有对应看板上的任务卡，看板也没有配置默认修复分支（V2_REPAIR_BASE），无法为修复建独立 worktree。')
     else:
         # 原卡的分支在看板自己的仓库里；V2_REPAIR_REPO 只管不挂原卡的修复
-        repo = str(source.get('repo') or env.get('V2_REPO_DIR') or '').strip()
+        repo = str(source.get('repo') or '').strip() or _board_repo(env)
         base = str(source.get('branch') or source.get('base') or '')
         if mode == 'enabled' and (not repo or not base or not BRANCH_RE.fullmatch(base) or not REPO_RE.fullmatch(repo)):
             raise iv.InterventionError(409, 'missing_repo', '原任务卡没有登记仓库或分支，无法为修复建独立 worktree。')

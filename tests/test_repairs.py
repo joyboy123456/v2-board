@@ -277,6 +277,13 @@ class RepairTest(unittest.TestCase):
         meta, _ = dispatcher_cards.parse((self.root / (result['repair_key'] + '.md')).read_text(encoding='utf-8'))
         self.assertEqual((meta['repo'], meta['base']), ('/srv/board-repo', 'h/src'))
 
+    def test_named_card_without_repo_uses_the_host_path_when_the_container_path_differs(self):
+        # 看板在容器里时 V2_REPO_DIR 是容器里的路径，dispatcher 在宿主上要用宿主路径
+        self.card.write_text(SOURCE.replace('repo: /srv/example-repo\n', ''), encoding='utf-8')
+        result = repairs.create(self.root, self.payload(), 'enabled', self.based(V2_REPO_DIR='/app/repo', V2_REPO_HOST_DIR='/srv/host-repo'))
+        meta, _ = dispatcher_cards.parse((self.root / (result['repair_key'] + '.md')).read_text(encoding='utf-8'))
+        self.assertEqual(meta['repo'], '/srv/host-repo')
+
     def test_card_names_the_board_does_not_know_are_kept_and_do_not_block_assignment(self):
         # 「别的卡」写的 OTHER 看板上没有；alias 只是另一张卡的文件名，不是它的 id，前端和原卡校验都不认
         (self.root / 'h/alias.md').write_text(SOURCE.replace('id: SRC', 'id: REAL'), encoding='utf-8')

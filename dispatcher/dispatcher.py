@@ -231,7 +231,7 @@ class Dispatcher:
         if answered:
             parts.append('有人回答了你的问题：\n' + answered)
         if pending:
-            parts.append('用户在看板的对话窗口里对你说：\n' + '\n'.join(f'- {mid} {text}' for mid, text in pending))
+            parts.append('用户在看板的对话窗口里对你说：\n' + '\n'.join(f'- {cards.message_text(text)}' for mid, text in pending))
         return '\n\n'.join(parts)
 
     # ---- finishing --------------------------------------------------------------

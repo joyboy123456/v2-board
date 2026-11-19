@@ -15,7 +15,9 @@ const COMPOSER: Record<string, string> = {
   failed: '这一轮失败了。发送后它会接着这个会话再试。',
   held: '这个会话已暂停，留言会记下，恢复后才送达。',
 };
-const NOISE = /^(ZCode Built-in|Reading additional input from stdin)/;
+// CLI 自己打的提示行，不是 Agent 说的话
+const NOISE = /^(ZCode Built-in|Reading additional input from stdin|Warning: Kiro CLI is running as root|Hide this warning:)/;
+const spoken = (content: string) => content.replace(/\[INFO\] \[KRS\][^\n]*/g, '').split('\n').filter(line => !NOISE.test(line.trim())).join('\n').trim();
 type Session = { key: string; card?: Card; cardId: string; title: string; runs: Run[]; state: string; live: boolean; last: number };
 type Item = { t: number; order: number; kind: 'run' | 'msg' | 'entry'; run?: Run; msg?: Msg; entry?: ChatEntry };
 type Failure = { status: number; detail: string };
@@ -71,8 +73,13 @@ export default function Chat({ board, jump, refresh, agentId, setAgentId, sessio
   const mode = board.intervention.mode;
   const execs = board.intervention.executors || [];
   const agents = feed.data?.agents || [];
-  const agent = agents.find(a => a.id === agentId) || agents.find(a => a.workload === 'running') || agents[0];
   const lists = useMemo(() => new Map(agents.map(a => [a.id, sessionsOf(a, board, feed.runs, execs)])), [agents, board, feed.runs, execs]);
+  // 没指定时：先看谁在等你回答，其次谁在跑，再其次最近有会话的
+  const recent = (a: Agent) => lists.get(a.id)?.[0]?.last || 0;
+  const agent = agents.find(a => a.id === agentId)
+    || agents.find(a => lists.get(a.id)?.some(x => x.card?.dispatch === 'asking'))
+    || agents.find(a => a.workload === 'running')
+    || [...agents].sort((a, b) => recent(b) - recent(a))[0];
   if (!feed.data) return <div className="panel empty" role="status">{feed.error || '正在读取 Agent…'}</div>;
   if (!agent) return <div className="panel empty">还没有登记任何 Agent</div>;
   const sessions = lists.get(agent.id) || [];
@@ -169,9 +176,10 @@ function Conversation({ agent, session, mode, feed, token, setToken, refresh, ju
     let order = 0;
     runs.forEach(run => {
       out.push({ t: when(run.started_at), order: order++, kind: 'run', run });
-      for (const msg of feed.transcripts[run.id] || []) if (msg.content?.trim() && !NOISE.test(msg.content)) out.push({ t: when(msg.ts) || when(run.started_at), order: order++, kind: 'msg', msg });
+      for (const raw of feed.transcripts[run.id] || []) { const content = raw.type === 'text' ? spoken(raw.content || '') : (raw.content || '').trim(); if (content) out.push({ t: when(raw.ts) || when(run.started_at), order: order++, kind: 'msg', msg: { ...raw, content } }); }
     });
-    for (const entry of card?.chatLog || []) out.push({ t: when(entry.time) || Number.MAX_SAFE_INTEGER, order: order++, kind: 'entry', entry });
+    // 卡片里的时间只到秒：同一秒内，你说的话排在这一轮开始之前，它的提问排在这一轮输出之后
+    for (const entry of card?.chatLog || []) { const t = when(entry.time); out.push({ t: !t ? Number.MAX_SAFE_INTEGER : entry.kind === 'question' ? t + 999 : t, order: entry.kind === 'question' ? order++ : -1e6 + order++, kind: 'entry', entry }); }
     return out.sort((a, b) => a.t - b.t || a.order - b.order);
   }, [runs, feed.transcripts, card?.chatLog]);
   const shown = all ? items : items.slice(-250);

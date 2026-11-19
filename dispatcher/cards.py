@@ -141,6 +141,12 @@ def delivered(meta):
         return 0
 
 
+def message_text(raw):
+    """'2026-11-19 22:24:55 CST | user: 你好' -> '你好'（送给 Agent 的只要正文）。"""
+    rest = raw.split(' | ', 1)[1] if ' | ' in raw else raw
+    return rest.split(': ', 1)[1] if ': ' in rest else rest
+
+
 def pending_messages(meta, body):
     return messages(body)[delivered(meta):]
 

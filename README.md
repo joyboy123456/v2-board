@@ -161,6 +161,8 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 | --- | --- |
 | `POST /api/interventions/answer` | 回答 `dispatch: asking` 卡片里的问题：追加到 `## 回答`，全部答完才把 `dispatch` 改成 `answered` |
 | `POST /api/interventions/repair` | 把一条未通过、部分通过或未完成的验收项指派给某个执行器：在 `fix/` 下新建一张 `REPAIR-*` 修复卡，原卡和原报告不动 |
+| `POST /api/interventions/message` | 「Agent 对话」页里对 Agent 说话：追加到卡片的 `## 留言`。看板不碰 Agent 进程；dispatcher 在这一轮结束后用执行器的 `resume` 命令接着同一个会话送达，已完成或失败的会话会被重新排进队列（`answered`） |
+| `POST /api/interventions/session` | 给某个执行器开一个新会话：在 `chat/` 下写一张 `dispatch: queued` 的卡，从 `V2_REPAIR_BASE` 开独立 worktree；需要同时开启指派修复 |
 
 | 环境变量 | 说明 |
 | --- | --- |
@@ -169,6 +171,7 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 | `V2_REPAIR_ENABLED=1` | 在 `enabled` 模式下另外开启指派修复 |
 | `V2_REPAIR_BASE` | 验收项没有指向看板上存在的任务卡时（没写「卡：」，或写的卡号在看板上找不到）修复分支的起点，比如线上部署所在的分支。不设就不能指派这类验收项；只在 `enabled` 模式生效 |
 | `V2_REPAIR_REPO` | 只用于上面这类不挂原卡的修复卡：登记的仓库路径，写 dispatcher 所在机器上的绝对路径；不设时取 `V2_REPO_DIR`。基于原卡的修复不用它 |
+| `V2_REPO_HOST_DIR` | 看板跑在容器里、且仓库在容器里的挂载路径和宿主不一样时设置：`V2_REPO_DIR` 对应的宿主绝对路径。基于原卡的修复在原卡没登记 `repo:` 时用它；不设时取 `V2_REPO_DIR` |
 | `V2_BROWSER_EXECUTORS` | 逗号分隔的执行器名；只有列在这里的才标「浏览器验收已确认」，其余标「未确认」 |
 | `V2_INTERVENTION_TRUST_PROXY_HEADERS=1` | 同源校验改用 `X-Forwarded-Host` / `X-Forwarded-Proto`。经反向代理访问时不设它，写入请求会因来源与 Host 不一致被 403 拒绝；只在看板只能经由可信反代到达时开启 |
 
