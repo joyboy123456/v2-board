@@ -121,7 +121,7 @@ def _body(source: dict, key: str, report: dict, index: int, item: dict, shots, n
     if missing:
         out += ['## 报告里引用但读不到的证据', *missing, '']
     if notes:
-        out += ['## 用户补充说明', notes, '']
+        out += ['## 用户补充说明', *(f'> {line}' for line in notes.split('\n')), '']
     out += ['## 验收要求',
             '1. 先复现问题，再修复；在本卡的独立 worktree 和分支上提交，不要自行合并。']
     if browser:
@@ -173,16 +173,16 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
         raise iv.InterventionError(409, 'item_not_repairable', '只有未通过、部分通过或未完成的验收项可以指派修复。')
     repo = str(source.get('repo') or env.get('V2_REPO_DIR') or '')
     base = str(source.get('branch') or source.get('base') or '')
-    if mode == 'enabled' and (not repo or not base or not re.fullmatch(r'[\w./-]+', base) or not os.path.isabs(repo)):
+    if mode == 'enabled' and (not repo or not base or not re.fullmatch(r'[\w./-]+', base) or not re.fullmatch(r'/[\w./-]+', repo)):
         raise iv.InterventionError(409, 'missing_repo', '原任务卡没有登记仓库或分支，无法为修复建独立 worktree。')
     digest = hashlib.sha256('\0'.join((key, rid, rrev, str(index))).encode()).hexdigest()[:10]
     repair_id = f'REPAIR-{digest.upper()}'
     dispatch = 'queued' if mode == 'enabled' else 'held'
     stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M')
-    front = ['---', f'id: "{repair_id}"', f'title: "修复：{source["id"]} · {_one_line(item["title"], 60)}"', 'status: "open"',
+    front = ['---', f'id: "{repair_id}"', f'title: "修复：{_one_line(str(source["id"]), 40)} · {_one_line(item["title"], 60)}"', 'status: "open"',
              f'assignee: "{executor}"', f'executor: "{executor}"', f'dispatch: "{dispatch}"', f'branch: "d/repair-{digest}"',
              *([f'repo: "{repo}"', f'base: "{base}"'] if mode == 'enabled' else []),
-             f'created: "{stamp}"', f'repair_source: "{key}"', f'repair_report: "{_one_line(rid, 200)}"', f'repair_item: "{index}"', '---', '']
+             f'created: "{stamp}"', f'repair_source: "{_one_line(key, 256)}"', f'repair_report: "{_one_line(rid, 200)}"', f'repair_item: "{index}"', '---', '']
     text = '\n'.join(front) + _body(source, key, report, index, item, _shots(root, item), notes, browser, test_mode, repair_id)
     folder = root / 'fix'
     if folder.is_symlink():
