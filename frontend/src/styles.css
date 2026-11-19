@@ -498,7 +498,8 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .pp-phase h3 { margin:2px 0 4px; font-size:15px; }
 .pp-phase header p { margin:0; color:var(--mute); font-size:12px; }
 .pp-phase header small { color:var(--sub); font-size:12px; white-space:nowrap; padding-top:4px; }
-.pp-cards { list-style:none; margin:0 0 0 13px; padding:0 0 0 30px; border-left:2px solid var(--line-2); display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:8px; }
+.pp-cards { list-style:none; margin:0 0 0 13px; padding:0 0 0 30px; border-left:2px solid var(--line-2); display:grid; grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr)); gap:8px; }
+.pp-cards>li { min-width:0; }
 .pp-card { width:100%; text-align:left; display:flex; flex-direction:column; gap:9px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--c-1a1a1a); min-width:0; }
 .pp-card:hover { border-color:var(--line-2); background:var(--c-202020); }
 .pp-title { display:flex; align-items:center; gap:8px; min-width:0; }
@@ -515,7 +516,7 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 @media(max-width:600px) {
  .pp-phase>header { grid-template-columns:28px minmax(0,1fr); }
  .pp-phase header small { grid-column:2; white-space:normal; padding:0; }
- .pp-cards { margin-left:13px; padding-left:14px; grid-template-columns:1fr; }
+ .pp-cards { margin-left:13px; padding-left:14px; grid-template-columns:minmax(0,1fr); }
 }
 .project-progress { overflow-x:clip; }
 .project-progress .ph { flex-wrap:wrap; }
