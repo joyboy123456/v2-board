@@ -23,7 +23,7 @@ export function reportsFor(reports: AccReport[] | undefined, c: Card, children: 
 
 function Lightbox({ shot, close }: { shot: AccShot; close: () => void }) {
   useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
     window.addEventListener('keydown', k, true);
     return () => window.removeEventListener('keydown', k, true);
   }, [close]);
@@ -116,7 +116,7 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
             <a className="dep" href={`?view=reports&report=${encodeURIComponent(r.id)}`}>看整份报告 →</a>
           </div>
           {r.shotsNote && items.every(it => !it.shots.length) && <p className="hint">{r.shotsNote}</p>}
-          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={itemHits(it, c) ? c : children.find(x => itemHits(it, x)) || c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
+          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={[...children].reverse().find(x => itemHits(it, x)) || c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
         </section>
       ))}
     </div>
@@ -162,6 +162,7 @@ function RepairForm({ b, c, r, index, it, open }: { b: Board; c: Card; r: AccRep
     <div className="repair">
       {existing.length > 0 && <p className="repair-links">已有修复卡：{existing.map(x => <button key={x.key} className="cid" onClick={() => open(x.key)}>{x.id}</button>)}</p>}
       {done ? <p className="repair-done">{done.message} <button className="cid" onClick={() => open(done.repair_key)}>{done.repair_key}</button></p>
+        : !list.length ? <p className="hint">还没有可指派的执行器：需要在调度配置里登记执行器，并且该配置指向这个看板目录。</p>
         : !on ? <button className="repair-open" onClick={() => setOn(true)}><Wrench size={14} />指派修复</button>
         : <div className="repair-form">
           <p className="repair-sum">会把这一项的结论、报错说明{it.shots.length ? `和 ${it.shots.length} 个截图/录屏` : ''}连同原卡 {c.id} 的分支信息一起交给 Agent，原卡不会被改动。</p>

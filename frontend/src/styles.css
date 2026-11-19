@@ -673,11 +673,11 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
   .acc-card .shots { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .shot { transition: none; } }
-.rep-doc .shots { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.rep-doc .shots { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 @media (max-width: 1099px) { .rep-doc .shots { grid-template-columns: 1fr; } }
 
 .shot.video { margin: 0; }
-.shot.video video { width: 100%; aspect-ratio: 16 / 10; display: block; background: var(--c-000000); object-fit: contain; }
+.shot.video video { width: 100%; aspect-ratio: 16 / 10; display: block; background: var(--media-bg); object-fit: contain; }
 .shot.video span { display: flex; align-items: center; gap: 6px; }
 
 /* ===== 透气版：更宽松的间距、充分利用横向空间 ===== */
@@ -794,6 +794,15 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
   .dr-body { padding: 16px 16px 32px; }
   .dr-meta { grid-template-columns: 1fr; }
   .hero-idle .working { padding: 12px 16px; }
+  /* 上面的宽松间距排在手机规则之后，这里把手机上的紧凑值补回来 */
+  .top { padding-bottom: 14px; margin-bottom: 16px; }
+  .ov-body { gap: 14px; }
+  .counts { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .count { padding: 6px 8px; border-radius: 10px; }
+  .count b { font-size: 18px; margin-bottom: 0; }
+  .sp { grid-template-columns: 70px 1fr; gap: 4px 10px; }
+  .sp-n { white-space: normal; }
+  .rep-list { padding: 10px; }
   .acc-item { padding: 14px; }
   .acc-card .shots { grid-template-columns: 1fr; }
 }
@@ -822,8 +831,10 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .repair-act button.primary { border-color: rgba(var(--rgb-accent),.5); background: rgba(var(--rgb-accent),.14); color: var(--c-9dd0ff); }
 .repair-act button:disabled { opacity: .45; cursor: not-allowed; }
 .repair-act button, .repair-act button.primary { flex: 0 0 auto; width: auto; white-space: nowrap; }
-.dr-tabs { scrollbar-width: none; }
-.dr-tabs::-webkit-scrollbar { display: none; }
+@media (hover: none) {
+  .dr-tabs { scrollbar-width: none; }
+  .dr-tabs::-webkit-scrollbar { display: none; }
+}
 
 /* ===== 只在亮色主题生效：衬线标题、白色面板、陶土橙 ===== */
 [data-theme="light"] ::selection { background: rgba(217,119,87,.28); }

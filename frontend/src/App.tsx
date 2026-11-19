@@ -336,10 +336,12 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
     ? '令牌缺失或无效。检查写入令牌后可重试；如果状态不确定，先刷新核对卡片。'
     : error?.status === 409
       ? `${error.detail || '卡片或问题状态已变化。'}请刷新看板核对回答记录后再操作。`
-      : error?.status === 403
-        ? '来源检查拒绝了此次请求。请从看板同源页面重试。'
-        : error?.status === 503
-          ? '此实例未启用写入，当前操作保持只读。'
+      : error?.code === 'not_demo_card'
+        ? error.detail
+        : error?.status === 403
+          ? '来源检查拒绝了此次请求。请从看板同源页面重试。'
+          : error?.code === 'writes_disabled'
+            ? '此实例未启用写入，当前操作保持只读。'
           : error?.detail || '提交失败；输入仍保留。刷新看板后再重试。';
   return (
     <section className="intervention-panel" aria-label="回答 Agent 问题">
@@ -353,7 +355,7 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
         <article className="intervention-question" key={question.id}>
           <div className="intervention-qhead"><b>{c.key} · {question.id}</b><span>{question.who || c.executor || c.assignee || 'worker 未标注'}</span></div>
           <p>{question.text}</p>
-          {question.options.length > 0 && <div className="intervention-options" aria-label="可选回答">
+          {question.options.length > 0 && <div className="intervention-options" role="group" aria-label="可选回答">
             {question.options.map(option => <button type="button" key={option} disabled={mode === 'readonly' || Boolean(pending)} onClick={() => setAnswer(question.id, option)}>{option}</button>)}
           </div>}
           <label className="intervention-answer">你的回答
@@ -405,8 +407,8 @@ function Drawer({ b, c, now, close, open, refresh }: { b: Board; c: Card; now: s
           </div>
         </div>
         <div className="dr-body">
-          {tab === 'intervene' && <InterventionPanel key={c.key} b={b} c={c} refresh={refresh} />}
-          {tab === 'acc' && <CardAcceptance b={b} c={c} open={open} />}
+          {hasIntervention && <div hidden={tab !== 'intervene'}><InterventionPanel key={c.key} b={b} c={c} refresh={refresh} /></div>}
+          {tab === 'acc' && <CardAcceptance key={c.key} b={b} c={c} open={open} />}
           {tab === 'rep' && (reps.length ? <ol className="tl">{reps.map((r, i) => (
             <li key={i}><div className="tl-h"><time>{r.time ? full(r.time) : '未注明时间'}</time>{r.who && <span className="who">Hark</span>}{r.sha && <code>{r.sha.slice(0, 8)}</code>}</div><Html className="tl-t" html={inline(r.text)} /></li>
           ))}</ol> : <div className="empty"><MessageSquareText size={16} />没有按格式写的汇报。最近摘要：<Html html={inline(c.last)} /></div>)}
@@ -587,6 +589,7 @@ export default function App() {
     <div className="app">
       <TopBar b={board} conn={conn} view={view} setView={setView} theme={theme} toggleTheme={toggleTheme} />
       {board.intervention.mode === 'demo' && <div className="intervention-banner demo-banner demo-global-banner">隔离演示 · 不连接真实 Agent</div>}
+      {error && <div className="errors" role="alert"><p><AlertTriangle size={14} />{error}，页面上是上一次读到的内容。</p></div>}
       {board.errors.length > 0 && <div className="errors">{board.errors.map(e => <p key={e}><AlertTriangle size={14} />{e}</p>)}</div>}
       <div className="cols">
         <NeedYou b={board} open={setOpen} />
