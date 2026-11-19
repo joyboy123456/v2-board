@@ -35,6 +35,12 @@ DISPATCH_RE = re.compile(
 )
 
 
+def dispatch_value(field: re.Match, value: str) -> str:
+    """改写 dispatch 行时沿用原来的写法：原来没加引号就不加，行尾带注释的那一行看板才读得懂。"""
+    quote = field.group('quote')
+    return f'{quote}{value}{quote}' if quote else value
+
+
 class InterventionError(Exception):
     def __init__(self, status: int, code: str, detail: str):
         super().__init__(detail)
@@ -482,7 +488,7 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
         dispatch = 'asking'
         if remaining == 0:
             updated_line = DISPATCH_RE.fullmatch(dispatch_line)
-            replacement = updated_line.group('prefix') + '"answered"' + updated_line.group('suffix') + dispatch_ending
+            replacement = updated_line.group('prefix') + dispatch_value(updated_line, 'answered') + updated_line.group('suffix') + dispatch_ending
             lines = front.splitlines(keepends=True)
             lines_with_dispatch = []
             offset = 0

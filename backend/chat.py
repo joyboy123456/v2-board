@@ -222,7 +222,7 @@ def _dispatched(raw: bytes, mode: str):
 
 def _with_dispatch(head: str, line, value: str) -> str:
     offset, field, ending = line
-    return head[:offset] + field.group('prefix') + f'"{value}"' + field.group('suffix') + ending + head[offset + len(field.group(0)) + len(ending):]
+    return head[:offset] + field.group('prefix') + iv.dispatch_value(field, value) + field.group('suffix') + ending + head[offset + len(field.group(0)) + len(ending):]
 
 
 def _save(card_fd: int, raw: bytes, text: str, front: re.Match, head: str, body: str) -> tuple[str, bytes]:

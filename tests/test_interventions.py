@@ -115,6 +115,23 @@ class InterventionTest(unittest.TestCase):
         self.error('not_demo_card', self.write, 403)
         self.assertEqual(self.card.read_bytes(), before)
 
+    def test_bare_dispatch_with_a_comment_stays_readable_after_the_last_answer(self):
+        self.card.write_text(CARD.replace('dispatch: "asking"', 'dispatch: asking # 等人回答'), encoding='utf-8')
+        self.write()
+        result = self.write(self.payload(question='Q2'))
+        text = self.card.read_text(encoding='utf-8')
+        self.assertEqual((result['remaining'], result['dispatch']), (0, 'answered'))
+        self.assertIn('dispatch: answered # 等人回答\n', text)
+        self.assertEqual(bp.split_front(text)[0]['dispatch'], 'answered')
+        self.assertEqual(result['card_meta']['dispatch'], 'answered')
+
+    def test_deeply_nested_front_matter_list_is_malformed_not_a_crash(self):
+        self.card.write_text(CARD.replace('executor: Worker A', 'depends: ' + '[' * 20000), encoding='utf-8')
+        before = self.card.read_bytes()
+        env = {'V2_BOARD_DIR': str(self.root), 'V2_INTERVENTION_MODE': 'enabled', 'V2_INTERVENTION_TOKEN': 't'}
+        self.error('malformed_frontmatter', lambda: self.write(mode='enabled', environ=env))
+        self.assertEqual(self.card.read_bytes(), before)
+
     def test_dispatch_changes_only_after_all_pending_questions_are_answered(self):
         first = self.write(self.payload('Q1', 'one'))
         self.assertEqual((first['remaining'], first['dispatch']), (1, 'asking'))

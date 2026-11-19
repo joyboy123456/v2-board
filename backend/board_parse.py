@@ -40,6 +40,8 @@ def scalar(value):
     if value.startswith('['):
         try:
             return json.loads(value)
+        except RecursionError:  # 嵌套太深的列表按格式错误处理，调用方都只接 ValueError
+            raise ValueError('front matter 列表嵌套过深') from None
         except ValueError:
             return [scalar(v) for v in value.strip('[]').split(',') if v.strip()]
     return value.split(' #', 1)[0].strip()
