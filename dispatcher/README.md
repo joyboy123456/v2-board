@@ -28,6 +28,8 @@ timeout: "21600"          # 可选，秒
 
 调度状态：`queued` 排队 → `running` 在跑 → `asking` 等人回答 → `answered` 已回答待续跑 → `done` 待验收 / `failed` 失败；`held` 暂停；`closed` 已验收或放弃。
 
+停止一轮：在卡片 front matter 里写 `stop: "<时间>"`（看板的「停止」按钮写的就是它）。dispatcher 结束正在跑的这一轮：先给进程组发 TERM，`stop_grace_seconds`（默认 10）秒后还在就连同子进程一起 KILL；然后去掉 `stop`，把卡置为 `held` 并写上 `stopped`。还在排队的卡直接置为 `held`，不启动。带 `stopped` 的 `held` 卡收到留言会回到 `answered` 接着原会话跑；手工 `held` 的不会。
+
 ## 命令
 
 ```sh

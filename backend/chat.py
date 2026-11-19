@@ -1,9 +1,11 @@
 """看板对话窗口：人对 Agent 说的话记进任务卡的「## 留言」，dispatcher 在下一轮把它送进同一个会话。
 
-看板只写卡片，不启动、不停止任何 Agent；CLI 跑完一轮才会读到留言，做不到中途打断。
+看板只写卡片，自己不启动也不杀任何 Agent 进程；CLI 跑完一轮才会读到留言，留言做不到中途打断。
+要中途打断用「停止」：在卡片上记一个 stop 请求，由 dispatcher 结束这一轮。
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 import fcntl
 import hashlib
@@ -27,6 +29,7 @@ Q_SECTION = re.compile(r'(?m)^## 待回答[ \t]*(?:\r?\n|$)')
 Q_ITEM = re.compile(r'^- \[(Q[1-9][0-9]*)\] (.+)$')
 STATES = ('queued', 'running', 'asking', 'answered', 'done', 'failed', 'held', 'closed')
 REOPEN = ('done', 'failed')  # 这一轮已经结束：留言让 dispatcher 接着原会话再跑一轮
+STOPPABLE = ('queued', 'running', 'answered')  # 在跑，或马上要跑：可以被「停止」
 NOTES = {
     'queued': '留言已记录，会随任务一起交给 Agent。',
     'running': '留言已记录。Agent 正在跑这一轮，这一轮结束后会接着同一个会话收到。',
@@ -150,18 +153,15 @@ def _append(body: str, heading: re.Match | None, line: str, newline: str) -> str
     return (head if head.endswith('\n') else head + newline) + before + line + newline + after + body[end:]
 
 
-def write_message(root: Path, payload: dict, mode: str, environ=None) -> dict:
-    env = os.environ if environ is None else environ
-    if iv.capabilities(root, env)['mode'] != mode or mode == 'readonly':
-        raise iv.InterventionError(403, 'writes_disabled', '看板写入未启用。')
-    if not isinstance(payload, dict) or set(payload) != {'card_key', 'message', 'expected_revision'}:
-        raise iv.InterventionError(422, 'invalid_request', '请求字段缺失或包含不支持的字段。')
-    key, revision = payload['card_key'], payload['expected_revision']
+def _card_key(key) -> str:
     if not isinstance(key, str) or len(key) > 256 or not iv.KEY_RE.fullmatch(key) or any(p in ('', '.', '..') for p in key.split('/')):
         raise iv.InterventionError(422, 'invalid_card_key', '任务卡标识无效。')
-    if not isinstance(revision, str) or not iv.REVISION_RE.fullmatch(revision):
-        raise iv.InterventionError(422, 'invalid_revision', '卡片版本无效，请刷新后重试。')
-    message = _text(payload['message'], MAX_MESSAGE_CHARS)
+    return key
+
+
+@contextmanager
+def _locked_card(root: Path, key: str):
+    """按卡号找到唯一的任务卡，加锁后交出 (fd, 原始字节)；dispatcher 用的是同一把文件锁。"""
     root_path = Path(os.path.abspath(os.fspath(root)))
     root_fd = card_fd = -1
     try:
@@ -174,65 +174,7 @@ def write_message(root: Path, payload: dict, mode: str, environ=None) -> dict:
             raise iv.InterventionError(404 if not hits else 409, 'card_not_found', '没有找到唯一对应的任务卡。')
         card_fd = iv._open_card(root_fd, hits[0].relative_to(root_path))
         fcntl.flock(card_fd, fcntl.LOCK_EX)
-        raw = iv._read_locked(card_fd)
-        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), revision):
-            raise iv.InterventionError(409, 'stale_revision', '卡片已更新，请刷新后再发送。')
-        try:
-            text = raw.decode('utf-8')
-        except UnicodeDecodeError:
-            raise iv.InterventionError(409, 'malformed_card', '任务卡不是有效的 UTF-8 文本，未写入。')
-        if b'\r' in raw and re.search(rb'(?<!\r)\n|\r(?!\n)', raw):
-            raise iv.InterventionError(409, 'malformed_card', '任务卡换行格式不一致，未写入。')
-        newline = '\r\n' if b'\r\n' in raw else '\n'
-        front = iv.FRONT_RE.match(text)
-        if not front:
-            raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 格式不明确，未写入。')
-        offset, field, ending, state = _dispatch_line(front.group('front'))
-        if state not in STATES:
-            raise iv.InterventionError(409, 'not_dispatched', '这张卡不是通过看板调度器派出的，没有可以续上的会话。')
-        if state == 'closed':
-            raise iv.InterventionError(409, 'session_closed', '这个会话已经关闭，不能再发消息。')
-        try:
-            meta = bp.split_front(text)[0]
-        except (ValueError, TypeError):
-            raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 格式不明确，未写入。')
-        if mode == 'demo' and not iv.is_demo_card(meta):
-            raise iv.InterventionError(403, 'not_demo_card', '演示模式只能改写合成的演示卡片，这张卡没有改动。')
-        body = text[front.end():]
-        headings = list(M_SECTION.finditer(body))
-        if len(headings) > 1 or any(line.startswith('##') and line[2:].strip() == '留言' and not re.fullmatch(r'## 留言[ \t]*', line) for line in body.splitlines()):
-            raise iv.InterventionError(409, 'malformed_protocol', '留言分区重复或格式不明确，未写入。')
-        count = sum(1 for line in _section(body, M_SECTION)[1].splitlines() if M_ITEM.fullmatch(line))
-        message_id = f'M{count + 1}'
-        stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M:%S CST')
-        body = _append(body, headings[0] if headings else None, f'- [{message_id}] {stamp} | user: {message}', newline)
-        head = front.group('front')
-        dispatch = state
-        if mode == 'enabled' and state in REOPEN:
-            dispatch = 'answered'
-            head = head[:offset] + field.group('prefix') + '"answered"' + field.group('suffix') + ending + head[offset + len(field.group(0)) + len(ending):]
-        updated = text[:front.start('front')] + head + text[front.end('front'):front.end()] + body
-        if not iv.FRONT_RE.match(updated):
-            raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 无法安全更新。')
-        data = updated.encode('utf-8')
-        if len(data) > iv.MAX_CARD_BYTES:
-            raise iv.InterventionError(413, 'card_too_large', '任务卡超过可安全修改的大小限制。')
-        try:
-            iv._overwrite(card_fd, data)
-        except OSError:
-            try:
-                iv._overwrite(card_fd, raw)
-            except OSError:
-                pass
-            raise
-        if mode == 'demo':
-            note = '演示留言已记录；不会连接或启动 Agent。'
-        elif dispatch != state:
-            note = '留言已记录，dispatcher 有空槽位时会接着原来的会话让 Agent 继续。'
-        else:
-            note = NOTES.get(state, '留言已记录。')
-        return dict(card_key=key, message_id=message_id, revision=hashlib.sha256(data).hexdigest(), card_body=body,
-                    card_meta=bp.split_front(updated)[0], dispatch=dispatch, message=note)
+        yield card_fd, iv._read_locked(card_fd)
     except iv.InterventionError:
         raise
     except (OSError, UnicodeError, ValueError):
@@ -241,6 +183,125 @@ def write_message(root: Path, payload: dict, mode: str, environ=None) -> dict:
         for fd in (card_fd, root_fd):
             if fd >= 0:
                 os.close(fd)
+
+
+def _dispatched(raw: bytes, mode: str):
+    """卡片文本、front matter、唯一的 dispatch 行和它现在的状态；格式不明确的卡一律不改。"""
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        raise iv.InterventionError(409, 'malformed_card', '任务卡不是有效的 UTF-8 文本，未写入。')
+    if b'\r' in raw and re.search(rb'(?<!\r)\n|\r(?!\n)', raw):
+        raise iv.InterventionError(409, 'malformed_card', '任务卡换行格式不一致，未写入。')
+    front = iv.FRONT_RE.match(text)
+    if not front:
+        raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 格式不明确，未写入。')
+    offset, field, ending, state = _dispatch_line(front.group('front'))
+    if state not in STATES:
+        raise iv.InterventionError(409, 'not_dispatched', '这张卡不是通过看板调度器派出的，没有可以续上的会话。')
+    if state == 'closed':
+        raise iv.InterventionError(409, 'session_closed', '这个会话已经关闭，不能再发消息，也不需要停止。')
+    try:
+        meta = bp.split_front(text)[0]
+    except (ValueError, TypeError):
+        raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 格式不明确，未写入。')
+    if mode == 'demo' and not iv.is_demo_card(meta):
+        raise iv.InterventionError(403, 'not_demo_card', '演示模式只能改写合成的演示卡片，这张卡没有改动。')
+    return text, front, (offset, field, ending), state, meta
+
+
+def _with_dispatch(head: str, line, value: str) -> str:
+    offset, field, ending = line
+    return head[:offset] + field.group('prefix') + f'"{value}"' + field.group('suffix') + ending + head[offset + len(field.group(0)) + len(ending):]
+
+
+def _save(card_fd: int, raw: bytes, text: str, front: re.Match, head: str, body: str) -> tuple[str, bytes]:
+    updated = text[:front.start('front')] + head + text[front.end('front'):front.end()] + body
+    if not iv.FRONT_RE.match(updated):
+        raise iv.InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 无法安全更新。')
+    data = updated.encode('utf-8')
+    if len(data) > iv.MAX_CARD_BYTES:
+        raise iv.InterventionError(413, 'card_too_large', '任务卡超过可安全修改的大小限制。')
+    try:
+        iv._overwrite(card_fd, data)
+    except OSError:
+        try:
+            iv._overwrite(card_fd, raw)
+        except OSError:
+            pass
+        raise
+    return updated, data
+
+
+def write_message(root: Path, payload: dict, mode: str, environ=None) -> dict:
+    env = os.environ if environ is None else environ
+    if iv.capabilities(root, env)['mode'] != mode or mode == 'readonly':
+        raise iv.InterventionError(403, 'writes_disabled', '看板写入未启用。')
+    if not isinstance(payload, dict) or set(payload) != {'card_key', 'message', 'expected_revision'}:
+        raise iv.InterventionError(422, 'invalid_request', '请求字段缺失或包含不支持的字段。')
+    key, revision = _card_key(payload['card_key']), payload['expected_revision']
+    if not isinstance(revision, str) or not iv.REVISION_RE.fullmatch(revision):
+        raise iv.InterventionError(422, 'invalid_revision', '卡片版本无效，请刷新后重试。')
+    message = _text(payload['message'], MAX_MESSAGE_CHARS)
+    with _locked_card(root, key) as (card_fd, raw):
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), revision):
+            raise iv.InterventionError(409, 'stale_revision', '卡片已更新，请刷新后再发送。')
+        text, front, line, state, meta = _dispatched(raw, mode)
+        newline = front.group('nl')
+        body = text[front.end():]
+        headings = list(M_SECTION.finditer(body))
+        if len(headings) > 1 or any(row.startswith('##') and row[2:].strip() == '留言' and not re.fullmatch(r'## 留言[ \t]*', row) for row in body.splitlines()):
+            raise iv.InterventionError(409, 'malformed_protocol', '留言分区重复或格式不明确，未写入。')
+        count = sum(1 for row in _section(body, M_SECTION)[1].splitlines() if M_ITEM.fullmatch(row))
+        message_id = f'M{count + 1}'
+        stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M:%S CST')
+        body = _append(body, headings[0] if headings else None, f'- [{message_id}] {stamp} | user: {message}', newline)
+        head = front.group('front')
+        dispatch = state
+        # 这一轮已经结束，或是被人用「停止」停下的：留言让 dispatcher 接着原会话再跑一轮。手工暂停（held 但没有 stopped）的不动。
+        if mode == 'enabled' and (state in REOPEN or (state == 'held' and meta.get('stopped'))):
+            dispatch = 'answered'
+            head = _with_dispatch(head, line, dispatch)
+        updated, data = _save(card_fd, raw, text, front, head, body)
+        if mode == 'demo':
+            note = '演示留言已记录；不会连接或启动 Agent。'
+        elif dispatch != state:
+            note = '留言已记录，dispatcher 有空槽位时会接着原来的会话让 Agent 继续。'
+        else:
+            note = NOTES.get(state, '留言已记录。')
+        return dict(card_key=key, message_id=message_id, revision=hashlib.sha256(data).hexdigest(), card_body=body,
+                    card_meta=bp.split_front(updated)[0], dispatch=dispatch, message=note)
+
+
+def request_stop(root: Path, payload: dict, mode: str, environ=None) -> dict:
+    """停止按钮。看板碰不到 Agent 进程（它在容器里，Agent 在宿主上），所以只在卡片上记一个 stop 请求；
+    dispatcher 下一次巡检时结束这一轮，把会话置为暂停并保留 worktree。
+
+    不校验卡片版本：Agent 在跑的时候卡片随时在变，而停止只看加锁那一刻的调度状态，重复点也只记一次。
+    """
+    env = os.environ if environ is None else environ
+    if iv.capabilities(root, env)['mode'] != mode or mode == 'readonly':
+        raise iv.InterventionError(403, 'writes_disabled', '看板写入未启用。')
+    if not isinstance(payload, dict) or set(payload) != {'card_key'}:
+        raise iv.InterventionError(422, 'invalid_request', '请求字段缺失或包含不支持的字段。')
+    key = _card_key(payload['card_key'])
+    with _locked_card(root, key) as (card_fd, raw):
+        text, front, line, state, meta = _dispatched(raw, mode)
+        head, body = front.group('front'), text[front.end():]
+        if re.search(r'(?m)^[ \t]*stop[ \t]*:', head):
+            return dict(card_key=key, revision=hashlib.sha256(raw).hexdigest(), card_body=body, card_meta=meta, dispatch=state, stopping=True,
+                        message='已经在停止了，dispatcher 几秒内会结束这一轮。')
+        if state not in STOPPABLE:
+            raise iv.InterventionError(409, 'not_running', '这个会话现在没有在跑，也没有在排队，不需要停止。')
+        if mode == 'demo':
+            head, dispatch, stopping, note = _with_dispatch(head, line, 'held'), 'held', False, '演示：会话已标记为暂停；没有真实的 Agent 被停止。'
+        else:
+            stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M:%S CST')
+            head, dispatch, stopping = head + front.group('nl') + f'stop: "{stamp}"', state, True
+            note = '已请求停止。dispatcher 几秒内结束这一轮，会话和 worktree 都保留，之后发消息可以接着聊。' if state == 'running' else '已请求停止。它还没开始这一轮，dispatcher 会把它放到暂停，不再启动。'
+        updated, data = _save(card_fd, raw, text, front, head, body)
+        return dict(card_key=key, revision=hashlib.sha256(data).hexdigest(), card_body=body, card_meta=bp.split_front(updated)[0],
+                    dispatch=dispatch, stopping=stopping, message=note)
 
 
 def create_session(root: Path, payload: dict, mode: str, environ=None) -> dict:

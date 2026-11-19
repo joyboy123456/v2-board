@@ -15,9 +15,11 @@ from dispatcher import Dispatcher  # noqa: E402
 # A fake agent. First turn: prints a codex-style thread id, then either finishes,
 # fails, asks a question, or sleeps. Resume turn: records the prompt and finishes.
 FAKE = r'''
-import json, os, subprocess, sys, time
+import json, os, signal, subprocess, sys, time
 from pathlib import Path
 mode, card, final, prompt = sys.argv[1:5]
+if mode == "deaf":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 print(json.dumps({"type": "thread.started", "thread_id": "T-" + card}), flush=True)
 Path(final).write_text("final " + mode)
 Path(os.getcwd(), "prompt-" + mode + ".txt").write_text(prompt)
@@ -25,7 +27,7 @@ if mode == "ok":
     sys.exit(0)
 if mode == "fail":
     sys.exit(3)
-if mode == "sleep":
+if mode in ("sleep", "deaf"):
     time.sleep(30)
 if mode == "ask":
     subprocess.run([sys.executable, os.environ["BOARD_ASK"], card, "用哪种方案？", "--option", "甲", "--option", "乙"], check=True)
@@ -48,7 +50,7 @@ class DispatcherTest(unittest.TestCase):
         fake.write_text(FAKE)
         py = sys.executable
         execs = {}
-        for mode in ('ok', 'fail', 'ask', 'sleep'):
+        for mode in ('ok', 'fail', 'ask', 'sleep', 'deaf'):
             execs[mode] = {'agent': f'fake {mode}', 'cmd': [py, str(fake), mode, '{card}', '{final}', '{prompt}'],
                            'resume': [py, str(fake), 'resume', '{card}', '{final}', 'RESUMED {session} {prompt}']}
         self.cfg = {'board': str(self.board), 'state': str(self.tmp / 'state'), 'slots': 2, 'min_free_mem_gb': 0,
@@ -150,6 +152,65 @@ class DispatcherTest(unittest.TestCase):
         os.killpg(d.children['M3'].pid, 15)
         self.settle(d, lambda: d.rec('M3').get('attempt') == 2 and self.state('M3') == 'done')
         self.assertIn('别动数据库', Path(d.rec('M3')['worktree'], 'prompt-resume.txt').read_text())
+
+    def started(self, d, card):
+        end = time.time() + 10  # 等它报出会话号，之后才续得上原会话
+        while 'thread.started' not in Path(d.rec(card)['log']).read_text() and time.time() < end:
+            time.sleep(.05)
+
+    def test_stop_ends_the_turn_and_keeps_the_session(self):
+        path = self.write('S1', 'sleep')
+        d = Dispatcher(self.cfg)
+        d.tick()
+        self.assertEqual(self.state('S1'), 'running')
+        self.started(d, 'S1')
+        pid = d.children['S1'].pid
+        cards.update(path, stop=cards.stamp())  # 看板的停止按钮只写这一个字段
+        self.settle(d, lambda: self.state('S1') == 'held')
+        meta = cards.read(path)[0]
+        self.assertNotIn('stop', meta)
+        self.assertIn('stopped', meta)
+        self.assertFalse(Dispatcher.alive(pid))
+        self.assertEqual(d.rec('S1')['session'], 'T-S1')
+        self.assertTrue(Path(d.rec('S1')['worktree']).is_dir())
+        self.assertIn('"kind": "stopped"', (self.tmp / 'state' / 'events.jsonl').read_text())
+        d.tick()
+        self.assertEqual(self.state('S1'), 'held')  # 停下以后不会自己再跑
+        # 之后发消息，接着同一个会话继续
+        cards.add_message(path, '换个思路再试')
+        self.assertEqual(self.state('S1'), 'answered')
+        self.settle(d, lambda: self.state('S1') == 'done' and d.rec('S1')['attempt'] == 2)
+        self.assertEqual(d.rec('S1')['mode'], 'resume')
+        self.assertIn('RESUMED T-S1', Path(d.rec('S1')['worktree'], 'prompt-resume.txt').read_text())
+        self.assertNotIn('stopped', cards.read(path)[0])
+
+    def test_stop_kills_an_agent_that_ignores_term(self):
+        self.cfg['stop_grace_seconds'] = .3
+        path = self.write('S2', 'deaf')
+        d = Dispatcher(self.cfg)
+        d.tick()
+        self.started(d, 'S2')
+        pids = Dispatcher.tree(d.children['S2'].pid)
+        self.assertGreater(len(pids), 1)  # timeout 和它下面的 Agent
+        cards.update(path, stop=cards.stamp())
+        d.tick()
+        self.assertEqual(self.state('S2'), 'running')  # 先发 TERM，它不理
+        self.settle(d, lambda: self.state('S2') == 'held')
+        self.assertFalse(any(Dispatcher.alive(p) for p in pids))
+
+    def test_stop_before_start_and_stale_requests(self):
+        queued = self.write('S3', 'ok', 'stop: "2026-11-19 23:00:00 CST"\n')
+        done = self.write('S4', 'ok')
+        d = Dispatcher(self.cfg)
+        self.settle(d, lambda: self.state('S4') == 'done')
+        self.assertEqual(self.state('S3'), 'held')  # 还在排队就被停止：不启动
+        self.assertEqual(d.rec('S3'), {})
+        self.assertIn('stopped', cards.read(queued)[0])
+        # 这一轮自己跑完之后才到的停止请求：什么都不停，只把请求清掉
+        cards.update(done, stop=cards.stamp())
+        d.tick()
+        meta = cards.read(done)[0]
+        self.assertEqual((meta['dispatch'], 'stop' in meta, 'stopped' in meta), ('done', False, False))
 
     def test_resume_without_session_id(self):
         # 有的 CLI 在同一个目录里「接着上一次」，续聊命令不带会话号

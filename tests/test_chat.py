@@ -58,6 +58,58 @@ class ChatTest(unittest.TestCase):
         self.assertEqual(self.code(self.send), 'not_dispatched')
         self.assertNotIn('留言', self.path.read_text())
 
+    def stop(self, **over):
+        payload = dict(card_key='fix/F1')
+        payload.update(over)
+        return chat.request_stop(self.root, payload, 'enabled', self.env)
+
+    def test_stop_records_a_request_and_leaves_the_state_to_the_dispatcher(self):
+        for state in ('running', 'queued', 'answered'):
+            self.path.write_text(card(state))
+            result = self.stop()
+            self.assertEqual((result['dispatch'], result['stopping']), (state, True), state)
+            text = self.path.read_text()
+            self.assertRegex(text, r'dispatch: "%s"\nstop: "\d{4}-\d\d-\d\d \d\d:\d\d:\d\d CST"\n---\n\n实现功能。\n$' % state)
+            self.assertEqual(result['revision'], hashlib.sha256(self.path.read_bytes()).hexdigest())
+            # 再点一次不会再写一遍
+            again = self.stop()
+            self.assertEqual((again['revision'], again['stopping']), (result['revision'], True))
+            self.assertEqual(self.path.read_text(), text)
+
+    def test_stop_refuses_sessions_that_are_not_running(self):
+        for state in ('asking', 'done', 'failed', 'held'):
+            self.path.write_text(card(state))
+            before = self.path.read_bytes()
+            self.assertEqual(self.code(self.stop), 'not_running', state)
+            self.assertEqual(self.path.read_bytes(), before)
+        self.path.write_text(card('closed'))
+        self.assertEqual(self.code(self.stop), 'session_closed')
+        self.path.write_text('---\nid: "F1"\ntitle: "旧卡"\nstatus: "review"\n---\n\n正文\n')
+        self.assertEqual(self.code(self.stop), 'not_dispatched')
+        self.path.write_text(card('running'))
+        before = self.path.read_bytes()
+        self.assertEqual(self.code(lambda: self.stop(expected_revision='0' * 64)), 'invalid_request')
+        self.assertEqual(self.code(lambda: self.stop(card_key='../fix/F1')), 'invalid_card_key')
+        self.assertEqual(self.code(lambda: self.stop(card_key='fix/NOPE')), 'card_not_found')
+        self.assertEqual(self.code(lambda: chat.request_stop(self.root, dict(card_key='fix/F1'), 'readonly', self.env)), 'writes_disabled')
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_stop_in_demo_only_holds_demo_cards(self):
+        (self.root / iv.DEMO_MARKER).write_bytes(iv.DEMO_MARKER_CONTENT)
+        env = {'V2_INTERVENTION_MODE': 'demo', 'V2_BOARD_DIR': str(self.root)}
+        self.path.write_text(card('running'))
+        self.assertEqual(self.code(lambda: chat.request_stop(self.root, dict(card_key='fix/F1'), 'demo', env)), 'not_demo_card')
+        self.path.write_text(card('running', 'demo: true\n'))
+        result = chat.request_stop(self.root, dict(card_key='fix/F1'), 'demo', env)
+        self.assertEqual((result['dispatch'], result['stopping']), ('held', False))
+        self.assertNotIn('stop:', self.path.read_text())
+
+    def test_message_reopens_a_stopped_session_but_not_a_hand_held_one(self):
+        self.path.write_text(card('held', 'stopped: "2026-11-19 23:00:00 CST"\n'))
+        self.assertEqual(self.send()['dispatch'], 'answered')
+        self.path.write_text(card('held'))
+        self.assertEqual(self.send()['dispatch'], 'held')
+
     def test_appends_in_order_and_keeps_other_sections(self):
         self.path.write_text(card('running', 'delivered: "1"\n', '正文\n\n## 留言\n- [M1] 2026-11-19 10:00:00 CST | user: 第一条\n\n## 回答\n- [Q1] 2026-11-19 09:00:00 CST | user: 用乙\n\n## 待回答\n- [Q1] 2026-11-19 08:00:00 CST | Codex | 用哪种？ | 选项：甲 / 乙\n'))
         result = self.send('第二条')

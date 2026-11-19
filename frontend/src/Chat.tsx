@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Bot, CornerDownLeft, ExternalLink, GitBranch, MessageSquarePlus, Radio } from 'lucide-react';
+import { AlertTriangle, Bot, CornerDownLeft, ExternalLink, GitBranch, MessageSquarePlus, Radio, Square } from 'lucide-react';
 import type { Board, Card, ChatEntry, Executor } from './types';
 import { COLORS, STATE, TYPE, cst, get, useAgentFeed } from './Agents';
 import type { Agent, Msg, Run } from './Agents';
@@ -8,13 +8,16 @@ import { contiguousSeq } from './run-stream';
 const DISPATCH: Record<string, string> = { queued: '排队中', running: '运行中', asking: '等你回答', answered: '马上继续', done: '本轮完成', failed: '失败', held: '已暂停', closed: '已关闭' };
 const COMPOSER: Record<string, string> = {
   queued: '还在排队，你说的话会随任务一起交给它。',
-  running: '它正在跑这一轮，中途打断不了；你说的话会在这一轮结束后接着同一个会话送达。',
+  running: '它正在跑这一轮。你说的话会在这一轮结束后接着同一个会话送达；要马上打断，点上面的「停止」。',
   asking: '它在等你回答上面的问题。也可以另外留言，会和回答一起送达。',
   answered: '它马上开始下一轮，你说的话下一轮开始时送达。',
   done: '这一轮已经结束。发送后它会接着这个会话继续。',
   failed: '这一轮失败了。发送后它会接着这个会话再试。',
   held: '这个会话已暂停，留言会记下，恢复后才送达。',
 };
+// 「停止」之后：已停止的会话发消息就能接着聊；手工暂停的（held 但不是被停止的）要人恢复
+const stateOf = (card: Card) => card.stopping ? '正在停止' : card.dispatch === 'held' && card.stopped ? '已停止' : DISPATCH[card.dispatch!] || card.dispatch!;
+const STOPPABLE = ['queued', 'running', 'answered'];
 // CLI 自己打的提示行，不是 Agent 说的话
 const NOISE = /^(ZCode Built-in|Reading additional input from stdin|Warning: Kiro CLI is running as root|Hide this warning:)/;
 const spoken = (content: string) => content.replace(/\[INFO\] \[KRS\][^\n]*/g, '').split('\n').filter(line => !NOISE.test(line.trim())).join('\n').trim();
@@ -49,7 +52,7 @@ function sessionsOf(agent: Agent, board: Board, runs: Run[], execs: Executor[]):
     session.runs.sort((a, b) => when(a.started_at) - when(b.started_at));
     const latest = session.runs[session.runs.length - 1];
     session.live = !!session.card?.dispatch && session.card.dispatch !== 'closed' && !!session.card.executor && mine.has(session.card.executor);
-    session.state = session.live || session.card?.dispatch === 'closed' ? DISPATCH[session.card!.dispatch!] || session.card!.dispatch! : latest ? STATE[latest.state] || latest.state : '未开始';
+    session.state = session.live || session.card?.dispatch === 'closed' ? stateOf(session.card!) : latest ? STATE[latest.state] || latest.state : '未开始';
     for (const entry of session.card?.chatLog || []) session.last = Math.max(session.last, when(entry.time));
   }
   return [...found.values()].sort((a, b) => b.last - a.last);
@@ -198,12 +201,22 @@ function Conversation({ agent, session, mode, feed, token, setToken, refresh, ju
   };
   const send = () => { if (card && text.trim()) submit('/api/interventions/message', { card_key: card.key, message: text, expected_revision: card.cardRevision }, 'message', () => setText('')); };
   const answer = (id: string) => { const value = answers[id] || ''; if (card && value.trim()) submit('/api/interventions/answer', { card_key: card.key, question_id: id, answer: value, expected_revision: card.cardRevision }, id, () => setAnswers(a => ({ ...a, [id]: '' }))); };
+  const stop = () => {
+    if (!card || busy) return;
+    if (needToken && !token.trim()) { setNote(''); setFailure({ status: 400, detail: '先在下面填写入令牌，再点停止。' }); return; }
+    if (!window.confirm('确认停止？会结束 ' + agent.name + ' 正在跑的这一轮。已经改的文件、分支和会话都保留，之后发消息可以接着聊。')) return;
+    submit('/api/interventions/stop', { card_key: card.key }, 'stop', () => {});
+  };
   const latest = runs[runs.length - 1];
+  const hint = !card ? '' : card.stopping ? '正在停止这一轮，几秒内结束。之后发消息可以接着这个会话继续。' : card.dispatch === 'held' && card.stopped ? '你已经停止了这一轮，会话和 worktree 都留着。发送后它会接着这个会话继续。' : COMPOSER[card.dispatch!] || '';
   return <div className="chat-main">
     <header className="chat-head">
       <div><h2>{session.cardId} <small>{session.title}</small></h2>
         <p className="hint"><span className={'chat-state ' + (card?.dispatch || latest?.state || '')}>{session.state}</span> · {agent.name} {agent.model}{card?.executor ? ' · ' + card.executor : ''}{(card?.branch || latest?.branch) ? <> · <GitBranch size={11} />{card?.branch || latest?.branch}</> : null} · {runs.length} 轮</p></div>
-      {card && <button className="dep" onClick={() => jump(card.key)}><ExternalLink size={12} />打开任务卡</button>}
+      {card && <div className="chat-actions">
+        {writable && (card.stopping || STOPPABLE.includes(card.dispatch || '')) && <button className="chat-stop" disabled={!!busy || card.stopping} onClick={stop} title="结束它正在跑的这一轮，会话和 worktree 保留"><Square size={10} />{card.stopping ? '正在停止…' : busy === 'stop' ? '提交中…' : '停止'}</button>}
+        <button className="dep" onClick={() => jump(card.key)}><ExternalLink size={12} />打开任务卡</button>
+      </div>}
     </header>
     <div ref={scroll} className="chat-log" role="log" aria-label="对话记录" onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
       {!all && items.length > shown.length && <button className="dep chat-more" onClick={() => setAll(true)}>显示更早的 {items.length - shown.length} 条</button>}
@@ -231,7 +244,7 @@ function Conversation({ agent, session, mode, feed, token, setToken, refresh, ju
     </div>
     <footer className="chat-composer">
       {writable ? <>
-        <p className="hint">{COMPOSER[card!.dispatch!] || ''}{resume ? '' : ' 这个执行器没有配续聊命令，继续时会从头再给它一遍任务。'}</p>
+        <p className="hint">{hint}{resume ? '' : ' 这个执行器没有配续聊命令，继续时会从头再给它一遍任务。'}</p>
         <div className="chat-input"><textarea rows={2} value={text} maxLength={4000} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); }} placeholder={'对 ' + agent.name + ' 说…（Ctrl+Enter 发送）'} />
           <button className="chat-send" disabled={!text.trim() || !!busy || (needToken && !token.trim())} onClick={send} aria-label="发送"><CornerDownLeft size={15} />{busy === 'message' ? '发送中…' : '发送'}</button></div>
         {needToken && <TokenField token={token} setToken={setToken} />}

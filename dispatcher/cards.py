@@ -10,6 +10,10 @@ board-report over `status`:
   failed   -> the executor failed or timed out
   held     -> a person paused it; the dispatcher ignores it
   closed   -> accepted or dropped by a person; the dispatcher ignores it
+
+Two more keys carry the board's 停止 button: the board writes 'stop' (a request),
+the dispatcher ends the turn, removes it and writes 'stopped' next to 'held'.
+A message to a session held that way reopens it; one held by hand stays held.
 """
 from __future__ import annotations
 
@@ -50,6 +54,14 @@ def set_keys(text, **values):
         else:
             head = (head + '\n' if head else '') + line
     return f'---\n{head}\n---\n' + (text[m.end():] if m else text)
+
+
+def drop_keys(text, *keys):
+    m = FM.match(text)
+    if not m:
+        return text
+    head = '\n'.join(line for line in m.group(1).split('\n') if line.split(':', 1)[0] not in keys)
+    return f'---\n{head}\n---\n' + text[m.end():]
 
 
 @contextmanager
@@ -157,7 +169,7 @@ def add_message(path, text, actor='user'):
         meta, body = parse(box[0])
         mid = f'M{len(messages(body)) + 1}'
         box[0] = _append(box[0], M_HEAD, f'- [{mid}] {stamp()} | {actor}: {" ".join(str(text).split())}')
-        if meta.get('dispatch') in ('done', 'failed'):
+        if meta.get('dispatch') in ('done', 'failed') or (meta.get('dispatch') == 'held' and meta.get('stopped')):
             box[0] = set_keys(box[0], dispatch='answered')
     return mid
 

@@ -162,6 +162,7 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 | `POST /api/interventions/answer` | 回答 `dispatch: asking` 卡片里的问题：追加到 `## 回答`，全部答完才把 `dispatch` 改成 `answered` |
 | `POST /api/interventions/repair` | 把一条未通过、部分通过或未完成的验收项指派给某个执行器：在 `fix/` 下新建一张 `REPAIR-*` 修复卡，原卡和原报告不动 |
 | `POST /api/interventions/message` | 「Agent 对话」页里对 Agent 说话：追加到卡片的 `## 留言`。看板不碰 Agent 进程；dispatcher 在这一轮结束后用执行器的 `resume` 命令接着同一个会话送达，已完成或失败的会话会被重新排进队列（`answered`） |
+| `POST /api/interventions/stop` | 「Agent 对话」页的「停止」：只在卡片 front matter 里记一个 `stop` 请求。看板碰不到 Agent 进程；dispatcher 下一次巡检时结束这一轮（先 TERM，`stop_grace_seconds` 秒后还在就 KILL），把会话置为 `held` 并标 `stopped`，worktree 和会话号保留。之后留言会接着同一个会话继续 |
 | `POST /api/interventions/session` | 给某个执行器开一个新会话：在 `chat/` 下写一张 `dispatch: queued` 的卡，从 `V2_REPAIR_BASE` 开独立 worktree；需要同时开启指派修复 |
 
 | 环境变量 | 说明 |

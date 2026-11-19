@@ -17,7 +17,7 @@ export interface Card {
   last: string; stamp: string; stampFromFile: boolean; source: string;
   reports: Report[]; commits: Commit[]; gitNote: string; baseline: string;
   decisions: Decision[]; body: string; progress: string; legacy: boolean;
-  dispatch?: string; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; chatLog?: ChatEntry[]; cardRevision: string; repairSource?: string; repairReport?: string; repairItem?: string;
+  dispatch?: string; stopping?: boolean; stopped?: boolean; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; chatLog?: ChatEntry[]; cardRevision: string; repairSource?: string; repairReport?: string; repairItem?: string;
 }
 export interface Question { id: string; time: string; who: string; text: string; options: string[] }
 export interface AnswerHistory { id: string; time: string; actor: string; answer: string }

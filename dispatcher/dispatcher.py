@@ -31,6 +31,7 @@ DEFAULTS = {
     'min_free_mem_gb': 4,
     'poll_seconds': 5,
     'run_timeout_seconds': 21600,
+    'stop_grace_seconds': 10,
     'agent_run': 'agent-run',
     'link': ['node_modules'],
     'worktree_root': '/root/wt',
@@ -119,6 +120,59 @@ class Dispatcher:
         except OSError:
             pass
         return 1e9
+
+    @staticmethod
+    def tree(pid):
+        """pid and every live descendant, whichever session or process group they moved to."""
+        kids = {}
+        for stat in Path('/proc').glob('[0-9]*/stat'):
+            try:
+                kids.setdefault(int(stat.read_text().rsplit(')', 1)[1].split()[1]), []).append(int(stat.parent.name))
+            except (OSError, ValueError, IndexError):
+                continue
+        out, todo = [], [int(pid)]
+        while todo:
+            out.append(todo.pop())
+            todo.extend(kids.get(out[-1], []))
+        return out
+
+    def halt(self, card):
+        """Someone pressed 停止 on the board. TERM first, so agent-run can pass it on and record the run; KILL what is left after the grace period."""
+        rec = self.rec(card)
+        child = self.children.get(card)
+        pid = child.pid if child else rec.get('pid')
+        sent = rec.get('stop_sent')
+        if not pid or (sent and time.time() - sent < float(self.cfg['stop_grace_seconds'])):
+            return
+        sig = signal.SIGKILL if sent else signal.SIGTERM
+        targets = self.tree(pid) if sent else [int(pid)]
+        try:  # launched with start_new_session, so the pid leads its own process group
+            if os.getpgid(int(pid)) == int(pid):
+                os.killpg(int(pid), sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        for target in targets:
+            try:
+                os.kill(target, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        self.save(card, stop_sent=time.time())
+        if not sent:
+            self.event('stopping', card, summary='有人在看板上点了停止，正在结束这一轮')
+
+    def shelve(self, path):
+        """A stop request for a card that is not running: one still waiting for a slot is held, anything else just loses the request."""
+        held = False
+        with cards.edit(path) as box:
+            meta, _ = cards.parse(box[0])
+            if not meta.get('stop'):
+                return
+            text = cards.drop_keys(box[0], 'stop')
+            if meta.get('dispatch') in ('queued', 'answered'):
+                text, held = cards.set_keys(text, dispatch='held', stopped=cards.stamp()), True
+            box[0] = text
+        if held:
+            self.event('stopped', path.stem, summary='还没开始这一轮就被人在看板上停止了')
 
     def running(self):
         return [c for c in self.children] + [
@@ -211,7 +265,8 @@ class Dispatcher:
         self.children[card] = child
         self.save(card, pid=child.pid, attempt=attempt, worktree=wt, branch=branch, executor=meta['executor'], log=str(out), final=str(final), started=cards.stamp(), mode=key, answers_sent=sorted(answered))
         # delivered 记的是这一轮提示词里带上的留言数；launch 之后才到的留言留给下一轮
-        cards.update(path, dispatch='running', delivered=total)
+        with cards.edit(path) as box:  # stopped 是上一次被人停止留下的标记，重新开跑就清掉
+            box[0] = cards.drop_keys(cards.set_keys(box[0], dispatch='running', delivered=total), 'stopped')
         self.event('resumed' if resume else 'started', card, executor=meta['executor'], attempt=attempt, summary=f"{spec.get('agent', meta['executor'])} 第 {attempt} 轮")
 
     @staticmethod
@@ -251,7 +306,7 @@ class Dispatcher:
         rec = self.rec(card)
         session = self.session_from(rec.get('log', '')) or rec.get('session', '')
         path = cards.find(self.board, card)
-        new = 'done' if rc == 0 else 'failed'
+        new, halted = 'done' if rc == 0 else 'failed', False
         if path:
             # 判断和改写在同一把锁里做，这一刻刚写进来的留言或回答不会被漏掉
             with cards.edit(path) as box:
@@ -265,15 +320,23 @@ class Dispatcher:
                     new = 'done'
                 else:
                     new = 'failed'
+                text = box[0]
+                if meta.get('stop'):
+                    # 有人点了停止：这一轮不算失败，会话留着；它自己正常跑完的话仍按完成算
+                    text = cards.drop_keys(text, 'stop')
+                    if new in ('failed', 'answered'):
+                        new, halted = 'held', True
+                        text = cards.set_keys(text, stopped=cards.stamp())
                 if state != new:
-                    box[0] = cards.set_keys(box[0], dispatch=new)
+                    text = cards.set_keys(text, dispatch=new)
+                box[0] = text
         summary = ''
         try:
             summary = Path(rec.get('final', '')).read_text(errors='replace').strip()[:300]
         except OSError:
             pass
-        self.save(card, pid=None, session=session, exit_code=rc, ended=cards.stamp())
-        self.event(new, card, exit_code=rc, summary=summary or f'退出码 {rc}')
+        self.save(card, pid=None, session=session, exit_code=rc, ended=cards.stamp(), stop_sent=None)
+        self.event('stopped' if halted else new, card, exit_code=rc, summary='被人在看板上停止，会话和 worktree 保留' if halted else summary or f'退出码 {rc}')
 
     def reap(self):
         for card, child in list(self.children.items()):
@@ -295,6 +358,14 @@ class Dispatcher:
         todo = []
         for path, meta, body in cards.scan(self.board):
             card, state = path.stem, meta.get('dispatch')
+            if meta.get('stop'):
+                if card in busy:
+                    self.halt(card)
+                elif state == 'running':
+                    self.finish(card, None)
+                else:
+                    self.shelve(path)
+                continue
             if card in busy:
                 continue
             if state == 'running':

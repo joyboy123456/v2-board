@@ -121,6 +121,7 @@ def card_json(c):
         bench=benchmark(d['title'], c['body'])[0], benchBrands=benchmark(d['title'], c['body'])[1],
         body=c['body'], progress='' if c['legacy'] else c['progress'], legacy=c['legacy'],
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
+        stopping=bool(d.get('stop')), stopped=bool(d.get('stopped')),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
         answerHistory=interventions.answer_history(c['body']), chatLog=chat.chat_log(d, c['body']), cardRevision=c['card_revision'],
         repairSource=str(d.get('repair_source', '') or ''), repairReport=str(d.get('repair_report', '') or ''), repairItem=str(d.get('repair_item', '') or ''),
@@ -452,6 +453,19 @@ async def api_intervention_message(request: Request):
         return failure
     body, meta = result.pop('card_body'), result.pop('card_meta')
     _publish_card(result['card_key'], dispatch=result['dispatch'], chatLog=chat.chat_log(meta, body), cardRevision=result['revision'], body=body)
+    hub.tick += 1
+    async with hub.cond:
+        hub.cond.notify_all()
+    return JSONResponse(dict(ok=True, mode=mode, **result))
+
+
+@app.post('/api/interventions/stop')
+async def api_intervention_stop(request: Request):
+    mode, result, failure = await _guarded(request, chat.request_stop)
+    if failure:
+        return failure
+    result.pop('card_body'), result.pop('card_meta')
+    _publish_card(result['card_key'], dispatch=result['dispatch'], stopping=result['stopping'], cardRevision=result['revision'])
     hub.tick += 1
     async with hub.cond:
         hub.cond.notify_all()
