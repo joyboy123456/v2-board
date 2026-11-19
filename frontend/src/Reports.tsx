@@ -97,7 +97,14 @@ function Meta({ r }: { r: AccReport }) {
 
 /** 抽屉里「验收」页签：只列这张卡相关的检查项 */
 export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: string) => void }) {
-  const hits = reportsFor(b.reports, c, b.cards.filter(x => x.repairSource === c.key));
+  // 修复卡（以及修复的修复）的验收报告也显示在原卡上
+  const children: Card[] = [];
+  for (let from = [c.key]; from.length;) {
+    const next = b.cards.filter(x => x.repairSource && from.includes(x.repairSource) && !children.includes(x) && x !== c);
+    children.push(...next);
+    from = next.map(x => x.key);
+  }
+  const hits = reportsFor(b.reports, c, children);
   if (!hits.length) return <div className="empty"><ClipboardCheck size={16} />这张卡还没有验收报告。</div>;
   return (
     <div className="acc-card">
@@ -109,7 +116,7 @@ export function CardAcceptance({ b, c, open }: { b: Board; c: Card; open: (k: st
             <a className="dep" href={`?view=reports&report=${encodeURIComponent(r.id)}`}>看整份报告 →</a>
           </div>
           {r.shotsNote && items.every(it => !it.shots.length) && <p className="hint">{r.shotsNote}</p>}
-          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
+          {items.map((it, i) => <ItemView key={i} it={it} cards={b.cards} open={open} repair={['fail', 'partial', 'pending'].includes(it.verdict) ? <RepairForm b={b} c={itemHits(it, c) ? c : children.find(x => itemHits(it, x)) || c} r={r} index={r.items.indexOf(it)} it={it} open={open} /> : undefined} />)}
         </section>
       ))}
     </div>
