@@ -47,7 +47,8 @@ def executors(root: Path, mode: str, environ=None) -> list[dict]:
         cfg = json.loads(Path(env.get('DISPATCH_CONFIG', '/etc/v2-dispatch.json')).read_text(encoding='utf-8'))
         if Path(cfg.get('board', '')).resolve() != Path(root).resolve():
             return []
-        names = [k for k in cfg.get('executors', {}) if isinstance(k, str) and EXECUTOR_RE.fullmatch(k)]
+        listed = cfg.get('executors')
+        names = [k for k in listed if isinstance(k, str) and EXECUTOR_RE.fullmatch(k)] if isinstance(listed, dict) else []
     except (OSError, ValueError, AttributeError, TypeError):
         return []
     verified = {x.strip() for x in env.get('V2_BROWSER_EXECUTORS', '').split(',') if x.strip()}

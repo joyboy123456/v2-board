@@ -178,7 +178,8 @@ class RepairTest(unittest.TestCase):
         self.assertFalse((self.root / 'fix').exists())
 
     def test_malformed_dispatch_config_lists_no_executors(self):
-        for config in ({'board': 5, 'executors': {'codex-a': {}}}, {'board': str(self.root), 'executors': 7}):
+        for config in ({'board': 5, 'executors': {'codex-a': {}}}, {'board': str(self.root), 'executors': 7},
+                       {'board': str(self.root), 'executors': 'codex'}, {'board': str(self.root), 'executors': ['codex-a']}):
             self.config.write_text(json.dumps(config), encoding='utf-8')
             self.assertEqual(repairs.executors(self.root, 'enabled', self.live), [])
 
