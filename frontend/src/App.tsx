@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type ReactNode } from 'react';
 import {
   Activity, Cpu, MemoryStick, HardDrive, GitBranch, GitCommitHorizontal, GitMerge, ChevronRight,
-  AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2,
+  AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2, Moon, Sun,
 } from 'lucide-react';
+import { applyTheme, storedTheme, type Theme } from './theme';
 import type { Board, Card, St, Decision } from './types';
 import TaskMap from './Map';
 import Agents from './Agents';
@@ -70,7 +71,8 @@ function Meter({ icon, label, value, pct }: { icon: ReactNode; label: string; va
   );
 }
 
-function TopBar({ b, conn, view, setView }: { b: Board; conn: Conn; view: string; setView: (v: string) => void }) {
+function TopBar({ b, conn, view, setView, theme, toggleTheme }: { b: Board; conn: Conn; view: string; setView: (v: string) => void; theme: Theme; toggleTheme: () => void }) {
+  const other = theme === 'dark' ? '亮色' : '暗色';
   return (
     <header className="top">
       <div className="brand">
@@ -85,6 +87,9 @@ function TopBar({ b, conn, view, setView }: { b: Board; conn: Conn; view: string
         <span>{conn === 'live' ? '实时' : conn === 'retry' ? '重连中' : '连接中'}</span>
         <time>北京时间 {b.now.slice(0, 16)}</time>
       </div>
+      <button className="theme-toggle" onClick={toggleTheme} aria-label={`切换到${other}模式`} title={`切换到${other}模式`}>
+        {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+      </button>
       <nav className="page-tabs" aria-label="看板视图">
         {([['agents', '人与产出', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />], ['reports', '验收报告', <ClipboardCheck size={15} key="r" />]] as const).map(([k, l, icon]) =>
           <button key={k} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{icon}{l}</button>)}
@@ -259,7 +264,7 @@ function SprintPanel({ b, tab, setTab, filter, setFilter, open, now }: {
         <FileText size={14} />任务 {rows.length} 张
         {filter && <span className="filter"><Filter size={12} />只看{LABEL[filter as St]}<button onClick={() => setFilter('')} aria-label="清除筛选"><X size={12} /></button></span>}
       </div>
-      <div className="rows" role="list">
+      <div className="rows" role="list" style={{ '--id-ch': Math.min(Math.max(4, ...rows.map(c => c.id.length)), 18) } as CSSProperties}>
         {rows.map(c => (
           <button key={c.key} role="listitem" className={`row s-${c.st}`} onClick={() => open(c.key)}>
             <span className="cid">{c.id}</span>
@@ -543,6 +548,12 @@ export default function App() {
   const { board, conn, error, refresh } = useBoard();
   const [tab, setTab] = useParam('tab', 'h');
   const [view, setView] = useParam('view', 'agents');
+  const [theme, setTheme] = useState<Theme>(storedTheme);
+  const toggleTheme = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next, true);
+    setTheme(next);
+  };
   const [filter, setFilterRaw] = useParam('f', '');
   const [openKey, setOpen] = useParam('open', '');
   const [focus, setFocus] = useParam('focus', '');
@@ -574,7 +585,7 @@ export default function App() {
   const current = openKey ? byKey.get(openKey) : undefined;
   return (
     <div className="app">
-      <TopBar b={board} conn={conn} view={view} setView={setView} />
+      <TopBar b={board} conn={conn} view={view} setView={setView} theme={theme} toggleTheme={toggleTheme} />
       {board.intervention.mode === 'demo' && <div className="intervention-banner demo-banner demo-global-banner">隔离演示 · 不连接真实 Agent</div>}
       {board.errors.length > 0 && <div className="errors">{board.errors.map(e => <p key={e}><AlertTriangle size={14} />{e}</p>)}</div>}
       <div className="cols">
