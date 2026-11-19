@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import stat
@@ -132,8 +133,12 @@ def demo_png(width: int = 480, height: int = 270) -> bytes:
 
 def validate_root(root: Path, custom: bool, force: bool) -> Path:
     absolute = Path(os.path.abspath(os.fspath(root.expanduser())))
+    home_as_given = Path(os.path.abspath(os.fspath(Path.home())))
+    home = home_as_given.resolve()
+    if absolute.is_relative_to(home_as_given):
+        # home 本身可以经由符号链接到达；只检查 home 以下的路径组件
+        absolute = home / absolute.relative_to(home_as_given)
     resolved = absolute.resolve(strict=False)
-    home = Path.home().resolve()
     repo = REPO_ROOT.resolve()
     if absolute != resolved:
         raise SystemExit('演示目录的路径组件不能是符号链接。')
@@ -174,6 +179,15 @@ def validate_root(root: Path, custom: bool, force: bool) -> Path:
     return absolute
 
 
+def write_file(path: Path, data: bytes) -> None:
+    """删掉旧文件再新建，不原地截断：旧文件若是硬链接，链接到的目录外文件不会被改写。"""
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o644)
+    with os.fdopen(fd, 'wb') as handle:
+        handle.write(data)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, help=f'隔离数据目录（默认：{DEFAULT_ROOT}）')
@@ -181,16 +195,16 @@ def main() -> None:
     args = parser.parse_args()
     root = validate_root(args.root or DEFAULT_ROOT, custom=args.root is not None, force=args.force)
     root.mkdir(parents=True, exist_ok=True)
+    write_file(root / MARKER, MARKER_CONTENT)  # 先写标记：中途中断后目录仍可用 --force 重建
     for relative, content in FIXTURES.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding='utf-8', newline='')
+        write_file(path, content.encode('utf-8'))
     (root / SHOT).parent.mkdir(parents=True, exist_ok=True)
-    (root / SHOT).write_bytes(demo_png())
+    write_file(root / SHOT, demo_png())
     if (root / 'fix').is_dir():
         for stale in (root / 'fix').glob('REPAIR-*.md'):  # 上一轮演示生成的合成修复卡
             stale.unlink()
-    (root / MARKER).write_bytes(MARKER_CONTENT)
     cards = sum(1 for name in FIXTURES if not name.startswith('reports/'))
     print(f'ISOLATED_DEMO_ROOT={root}')
     print(f'SYNTHETIC_CARDS={cards} MARKER={MARKER}')

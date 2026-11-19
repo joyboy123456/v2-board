@@ -164,10 +164,27 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(self.code(payload), expected, payload)
         self.assertFalse((self.root / 'fix').exists())
 
-    def test_source_without_repo_or_branch_cannot_be_queued(self):
-        self.card.write_text(SOURCE.replace('repo: /srv/example-repo\n', ''), encoding='utf-8')
-        env = {k: v for k, v in self.live.items() if k != 'V2_REPO_DIR'}
-        self.assertEqual(self.code(self.payload(), env=env), 'missing_repo')
+    def test_source_without_repo_or_usable_branch_cannot_be_queued(self):
+        for broken in (SOURCE.replace('repo: /srv/example-repo\n', ''), SOURCE.replace('branch: h/src\n', ''),
+                       SOURCE.replace('branch: h/src', 'branch: --upload-pack=x')):
+            self.card.write_text(broken, encoding='utf-8')
+            self.assertEqual(self.code(self.payload()), 'missing_repo')
+        self.assertFalse((self.root / 'fix').exists())
+
+    def test_malformed_dispatch_config_lists_no_executors(self):
+        for config in ({'board': 5, 'executors': {'codex-a': {}}}, {'board': str(self.root), 'executors': 7}):
+            self.config.write_text(json.dumps(config), encoding='utf-8')
+            self.assertEqual(repairs.executors(self.root, 'enabled', self.live), [])
+
+    def test_item_keeps_one_card_when_other_parts_of_the_report_change(self):
+        first = repairs.create(self.root, self.payload(), 'enabled', self.live)
+        self.report.write_text(REPORT + '\n## 新增一项\n卡：SRC\n结论：未通过\n- 另一个问题。\n', encoding='utf-8')
+        again = repairs.create(self.root, self.payload(), 'enabled', self.live)
+        self.assertEqual((again['created'], again['repair_id']), (False, first['repair_id']))
+        self.report.write_text(REPORT.replace('- 结果节点是红框。', '- 修过一轮后仍是红框。'), encoding='utf-8')
+        changed = repairs.create(self.root, self.payload(), 'enabled', self.live)
+        self.assertTrue(changed['created'])
+        self.assertEqual(len(list((self.root / 'fix').glob('REPAIR-*.md'))), 2)
 
     def test_injected_text_cannot_break_front_matter(self):
         self.report.write_text(REPORT.replace('## 画布不显示图片', '## 画布"\\不显示 --- 图片'), encoding='utf-8')

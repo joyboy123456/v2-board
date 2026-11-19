@@ -48,7 +48,7 @@ def executors(root: Path, mode: str, environ=None) -> list[dict]:
         if Path(cfg.get('board', '')).resolve() != Path(root).resolve():
             return []
         names = [k for k in cfg.get('executors', {}) if isinstance(k, str) and EXECUTOR_RE.fullmatch(k)]
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, TypeError):
         return []
     verified = {x.strip() for x in env.get('V2_BROWSER_EXECUTORS', '').split(',') if x.strip()}
     return [dict(id=k, name=k, browser='verified' if k in verified else 'unknown') for k in sorted(names)]
@@ -174,9 +174,11 @@ def create(root: Path, payload: dict, mode: str, environ=None) -> dict:
         raise iv.InterventionError(409, 'item_not_repairable', '只有未通过、部分通过或未完成的验收项可以指派修复。')
     repo = str(source.get('repo') or env.get('V2_REPO_DIR') or '')
     base = str(source.get('branch') or source.get('base') or '')
-    if mode == 'enabled' and (not repo or not base or not re.fullmatch(r'[\w./-]+', base) or not re.fullmatch(r'/[\w./-]+', repo)):
+    if mode == 'enabled' and (not repo or not base or not re.fullmatch(r'[\w/][\w./-]*', base) or not re.fullmatch(r'/[\w./-]+', repo)):
         raise iv.InterventionError(409, 'missing_repo', '原任务卡没有登记仓库或分支，无法为修复建独立 worktree。')
-    digest = hashlib.sha256('\0'.join((key, rid, rrev, str(index))).encode()).hexdigest()[:10]
+    # 按验收项的内容而不是整份报告的版本定 id：报告别处改动后再指派同一项，仍是同一张卡
+    content = '\0'.join((item['title'], item['verdictText'], item['text'], *(shot['src'] for shot in item['shots'])))
+    digest = hashlib.sha256('\0'.join((key, rid, hashlib.sha256(content.encode()).hexdigest())).encode()).hexdigest()[:10]
     repair_id = f'REPAIR-{digest.upper()}'
     dispatch = 'queued' if mode == 'enabled' else 'held'
     stamp = datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M')

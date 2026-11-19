@@ -94,7 +94,8 @@ def read_text(path):
         return ''
 
 
-MAX_CARD_BYTES = 1024 * 1024
+# 只为防止把异常大的文件整个读进内存；能否写入另由 interventions.MAX_CARD_BYTES 限制
+MAX_READ_BYTES = 16 * 1024 * 1024
 
 
 def read_card_bytes(card):
@@ -104,17 +105,17 @@ def read_card_bytes(card):
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise OSError('card is not a regular file')
-        if st.st_size > MAX_CARD_BYTES:
+        if st.st_size > MAX_READ_BYTES:
             raise ValueError('card exceeds the safe read limit')
         chunks = []
         size = 0
         while True:
-            chunk = os.read(fd, min(65536, MAX_CARD_BYTES + 1 - size))
+            chunk = os.read(fd, min(65536, MAX_READ_BYTES + 1 - size))
             if not chunk:
                 break
             chunks.append(chunk)
             size += len(chunk)
-            if size > MAX_CARD_BYTES:
+            if size > MAX_READ_BYTES:
                 raise ValueError('card exceeds the safe read limit')
         return b''.join(chunks)
     finally:
@@ -168,7 +169,7 @@ def _card_probe(card):
         os.close(fd)
 
 
-def discover(root):
+def discover(root, include_unreadable=False):
     """Every Markdown document inside a batch is a card; root keeps legacy IDs only."""
     excluded = {'runs', 'events', 'shots', 'reports'}
     groups = [('wiring', root)] + [(p.name, p) for p in sorted(root.iterdir()) if p.is_dir() and not p.is_symlink() and not p.name.startswith('.') and p.name not in excluded]
@@ -180,6 +181,9 @@ def discover(root):
                 continue
             head = _card_probe(card)
             if head is None:
+                # 编号卡打不开时仍交给调用方，让读取错误出现在看板的错误列表里
+                if include_unreadable and re.fullmatch(r'\d{2}', card.stem):
+                    yield sprint, card
                 continue
             # A card is any batch document with front matter (even if id/title/status are
             # missing); prompts, notes and QA findings without front matter are not cards.
@@ -294,7 +298,7 @@ def collect():
     from runs import all_runs
     from card_git import inspect_card
     records = all_runs(BOARD)
-    for sprint, path in discover(BOARD):
+    for sprint, path in discover(BOARD, include_unreadable=True):
         try:
             data, body, progress, card_revision = metadata(path, sprint, include_revision=True)
             progress_path = path.with_name(path.stem + '-progress.md')

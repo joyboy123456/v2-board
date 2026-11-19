@@ -215,6 +215,19 @@ class InterventionTest(unittest.TestCase):
         self.assertEqual(history[0]['answer'], 'saved answer')
         self.assertEqual(result['revision'], digest(self.card))
 
+    def test_oversized_card_is_still_shown_but_cannot_be_written(self):
+        self.card.write_text(CARD + 'x' * (iv.MAX_CARD_BYTES + 1), encoding='utf-8')
+        data, _, _, revision = bp.metadata(self.card, 'h', include_revision=True)
+        self.assertEqual((data['id'], revision), ('TEST-CARD', digest(self.card)))
+        self.error('card_too_large', self.write, 413)
+
+    def test_unreadable_numbered_card_is_reported_to_the_board_only(self):
+        os.mkfifo(self.sprint / '07.md')
+        self.assertNotIn('07', [path.stem for _, path in bp.discover(self.root)])
+        self.assertIn('07', [path.stem for _, path in bp.discover(self.root, include_unreadable=True)])
+        with self.assertRaises(OSError):
+            bp.metadata(self.sprint / '07.md', 'h')
+
     def test_legacy_answer_containing_separator_is_not_cut(self):
         body = '## 回答\n- [Q1] 用方案 A | 不要方案 B\n- [Q2] 2026-01-01 09:05:00 CST | user: 好 | 就这样\n'
         history = iv.answer_history(body)
@@ -302,6 +315,33 @@ class DemoSetupGuardTest(unittest.TestCase):
                 demo_setup.validate_root(root, custom=True, force=True)
         self.assertEqual((root / 'h/01.md').read_text(encoding='utf-8'), 'could be real data')
 
+    def test_interrupted_setup_can_be_rebuilt_and_hard_links_are_not_written_through(self):
+        root = self.home / 'preview'
+        argv = ['setup_intervention_demo.py', '--root', str(root), '--force']
+        with patch('pathlib.Path.home', return_value=self.home), patch('sys.argv', argv), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(demo_setup, 'demo_png', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                demo_setup.main()
+            self.assertFalse((root / demo_setup.SHOT).exists())
+            outside = Path(self.temp.name) / 'outside.md'
+            outside.write_text('real data', encoding='utf-8')
+            (root / 'h/01.md').unlink()
+            os.link(outside, root / 'h/01.md')
+            demo_setup.main()
+        self.assertTrue((root / demo_setup.SHOT).is_file())
+        self.assertIn('## 待回答', (root / 'h/01.md').read_text(encoding='utf-8'))
+        self.assertEqual(outside.read_text(encoding='utf-8'), 'real data')
+
+    def test_home_reached_through_a_symlink_is_accepted(self):
+        link = Path(self.temp.name) / 'home-link'
+        link.symlink_to(self.home, target_is_directory=True)
+        (self.home / 'elsewhere').mkdir()
+        (self.home / 'alias').symlink_to(self.home / 'elsewhere', target_is_directory=True)
+        with patch('pathlib.Path.home', return_value=link):
+            self.assertEqual(demo_setup.validate_root(link / 'preview', custom=True, force=True), self.home.resolve() / 'preview')
+            with self.assertRaises(SystemExit):
+                demo_setup.validate_root(link / 'alias' / 'preview', custom=True, force=True)
+
     def test_roots_outside_home_or_inside_repository_are_rejected(self):
         with patch('pathlib.Path.home', return_value=self.home):
             with self.assertRaises(SystemExit):
@@ -327,6 +367,7 @@ class InterventionApiTest(unittest.TestCase):
         self.card.write_text(CARD, encoding='utf-8')
         (self.root / iv.DEMO_MARKER).write_bytes(iv.DEMO_MARKER_CONTENT)
         self.original_board = self.app.BOARD
+        self.original_hub = (self.app.hub.board, self.app.hub.tick)
         self.app.BOARD = self.root
         bp.BOARD = self.root
         self.app.hub.board = {
@@ -341,6 +382,7 @@ class InterventionApiTest(unittest.TestCase):
     def tearDown(self):
         self.app.BOARD = self.original_board
         bp.BOARD = self.original_board
+        self.app.hub.board, self.app.hub.tick = self.original_hub
         self.temp.cleanup()
 
     def call(self, payload=None, headers=None, raw_body=None, content_type='application/json', scheme='http'):
