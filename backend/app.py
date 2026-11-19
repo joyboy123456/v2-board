@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import acceptance
+import chat
 import repairs
 from fastapi.staticfiles import StaticFiles
 
@@ -28,7 +29,7 @@ from signals import event, load_json, rows, safe_id
 BOARD = Path(os.environ.get('V2_BOARD_DIR', '/srv/v2-wiring-board'))
 bp.BOARD = BOARD
 DIST = Path(__file__).resolve().parent.parent / 'frontend' / 'dist'
-SPRINT_NAMES = {'wiring': '第 1 批 · 接真实后端', 'parity': '第 2 批 · 对标竞品', 'h': '第 3 批 · 主流程新功能', 'fix': '第 4 批 · 验收退回修复'}
+SPRINT_NAMES = {'wiring': '第 1 批 · 接真实后端', 'parity': '第 2 批 · 对标竞品', 'h': '第 3 批 · 主流程新功能', 'fix': '第 4 批 · 验收退回修复', 'chat': '对话窗口直接交办'}
 SPRINT_DESC = {
     'wiring': '卡号 01–08：把 V2 界面接上真实账号、生成、资产和对话 agent',
     'parity': '卡号 G1–G7：照着 Lovart、即梦、椒图补齐体验，每张卡标明学哪家的哪个功能',
@@ -121,7 +122,7 @@ def card_json(c):
         body=c['body'], progress='' if c['legacy'] else c['progress'], legacy=c['legacy'],
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
-        answerHistory=interventions.answer_history(c['body']), cardRevision=c['card_revision'],
+        answerHistory=interventions.answer_history(c['body']), chatLog=chat.chat_log(d, c['body']), cardRevision=c['card_revision'],
         repairSource=str(d.get('repair_source', '') or ''), repairReport=str(d.get('repair_report', '') or ''), repairItem=str(d.get('repair_item', '') or ''),
     )
 
@@ -395,6 +396,9 @@ def intervention_state():
     state['repair'] = repairs.enabled(state['mode'])
     state['executors'] = repairs.executors(BOARD, state['mode']) if state['repair'] else []
     state['repairBase'] = repairs.default_base(state['mode'])
+    agents = chat.executor_agents(BOARD, state['mode'])
+    for item in state['executors']:
+        item.update(agents.get(item['id'], {}))
     return state
 
 
@@ -413,6 +417,53 @@ async def api_intervention_repair(request: Request):
     except interventions.InterventionError as error:
         headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
         return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+def _publish_card(key, **changes):
+    if hub.board is None:
+        return
+    board = dict(hub.board)
+    board['cards'] = [dict(card, **changes) if card.get('key') == key else card for card in board.get('cards', [])]
+    version_input = {k: v for k, v in board.items() if k not in ('version', 'dispatch')}
+    board['version'] = hashlib.sha1(json.dumps(version_input, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+    hub.board = board
+
+
+async def _guarded(request: Request, work):
+    try:
+        mode = interventions.capabilities(BOARD)['mode']
+        if mode == 'readonly':
+            raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        interventions.authorize(mode, request.headers.get('authorization', ''))
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(work, BOARD, payload, mode)
+        return mode, result, None
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return None, None, JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+@app.post('/api/interventions/message')
+async def api_intervention_message(request: Request):
+    mode, result, failure = await _guarded(request, chat.write_message)
+    if failure:
+        return failure
+    body, meta = result.pop('card_body'), result.pop('card_meta')
+    _publish_card(result['card_key'], dispatch=result['dispatch'], chatLog=chat.chat_log(meta, body), cardRevision=result['revision'], body=body)
+    hub.tick += 1
+    async with hub.cond:
+        hub.cond.notify_all()
+    return JSONResponse(dict(ok=True, mode=mode, **result))
+
+
+@app.post('/api/interventions/session')
+async def api_intervention_session(request: Request):
+    mode, result, failure = await _guarded(request, chat.create_session)
+    if failure:
+        return failure
+    return JSONResponse(dict(ok=True, mode=mode, **result))
 
 
 @app.post('/api/interventions/answer')
@@ -438,6 +489,7 @@ async def api_intervention_answer(request: Request):
                         dispatch=result['dispatch'],
                         questions=open_questions(card_body) if result['dispatch'] == 'asking' else [],
                         answerHistory=interventions.answer_history(card_body),
+                        chatLog=chat.chat_log(card, card_body),
                         cardRevision=result['revision'],
                         body=card_body,
                     )

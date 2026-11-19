@@ -106,6 +106,63 @@ class DispatcherTest(unittest.TestCase):
         self.assertIn('答：', resumed)
         self.assertIn('用乙', resumed)
 
+    def test_message_reopens_same_session(self):
+        path = self.write('M1', 'ok')
+        d = Dispatcher(self.cfg)
+        self.settle(d, lambda: self.state('M1') == 'done')
+        self.assertEqual(cards.add_message(path, '把按钮  改成蓝色'), 'M1')
+        self.assertEqual(self.state('M1'), 'answered')
+        self.settle(d, lambda: self.state('M1') == 'done' and d.rec('M1')['attempt'] == 2)
+        rec = d.rec('M1')
+        self.assertEqual(rec['mode'], 'resume')
+        resumed = Path(rec['worktree'], 'prompt-resume.txt').read_text()
+        self.assertTrue(resumed.startswith('RESUMED T-M1'))
+        self.assertIn('把按钮 改成蓝色', resumed)
+        self.assertNotIn('有人回答了你的问题', resumed)
+        meta, body = cards.read(path)
+        self.assertEqual(meta['delivered'], '1')
+        self.assertEqual(cards.pending_messages(meta, body), [])
+        # 送过的留言不会再送一遍
+        cards.add_message(path, '再加一个图标')
+        self.settle(d, lambda: self.state('M1') == 'done' and d.rec('M1')['attempt'] == 3)
+        again = Path(d.rec('M1')['worktree'], 'prompt-resume.txt').read_text()
+        self.assertIn('再加一个图标', again)
+        self.assertNotIn('改成蓝色', again)
+
+    def test_message_before_start_and_during_run(self):
+        path = self.write('M2', 'ok')
+        cards.add_message(path, '先看 README')
+        self.assertEqual(self.state('M2'), 'queued')
+        d = Dispatcher(self.cfg)
+        self.settle(d, lambda: self.state('M2') == 'done')
+        first = Path(d.rec('M2')['worktree'], 'prompt-ok.txt').read_text()
+        self.assertIn('先看 README', first)
+        self.assertEqual(first.count('先看 README'), 1)  # 任务正文里不重复带留言分区
+        # 跑着的时候来的留言：这一轮结束后接着同一个会话送达，而不是丢掉
+        slow = self.write('M3', 'sleep')
+        d.tick()
+        self.assertEqual(self.state('M3'), 'running')
+        cards.add_message(slow, '别动数据库')
+        self.assertEqual(self.state('M3'), 'running')
+        end = time.time() + 10  # 等它报出会话号再结束这一轮，否则续不上原会话
+        while 'thread.started' not in Path(d.rec('M3')['log']).read_text() and time.time() < end:
+            time.sleep(.05)
+        os.killpg(d.children['M3'].pid, 15)
+        self.settle(d, lambda: d.rec('M3').get('attempt') == 2 and self.state('M3') == 'done')
+        self.assertIn('别动数据库', Path(d.rec('M3')['worktree'], 'prompt-resume.txt').read_text())
+
+    def test_resume_without_session_id(self):
+        # 有的 CLI 在同一个目录里「接着上一次」，续聊命令不带会话号
+        self.cfg['executors']['ok']['resume'] = [sys.executable, str(self.tmp / 'fake.py'), 'resume', '{card}', '{final}', 'CONTINUED {prompt}']
+        path = self.write('M4', 'ok')
+        d = Dispatcher(self.cfg)
+        self.settle(d, lambda: self.state('M4') == 'done')
+        d.save('M4', session='')
+        cards.add_message(path, '继续')
+        self.settle(d, lambda: self.state('M4') == 'done' and d.rec('M4')['attempt'] == 2)
+        self.assertEqual(d.rec('M4')['mode'], 'resume')
+        self.assertTrue(Path(d.rec('M4')['worktree'], 'prompt-resume.txt').read_text().startswith('CONTINUED 用户在看板的对话窗口里对你说'))
+
     def test_slots_and_priority(self):
         self.write('C1', 'sleep', 'priority: "90"\n')
         self.write('C2', 'sleep')

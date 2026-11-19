@@ -39,7 +39,7 @@ DEFAULTS = {
 
 SESSION_PATTERNS = (
     re.compile(r'"type"\s*:\s*"thread\.started".*?"thread_id"\s*:\s*"([^"]+)"'),
-    re.compile(r'"session_id"\s*:\s*"([^"]+)"'),
+    re.compile(r'"session_?[iI]d"\s*:\s*"([^"]+)"'),
 )
 
 PROTOCOL = """
@@ -54,8 +54,7 @@ PROTOCOL = """
 - 完成：提交到本分支（中文提交信息），不推送、不部署、不改其他分支。最后一条消息写清改了什么、测试结果、还有什么没做。
 """
 
-RESUME = """有人回答了你的问题：
-{answers}
+RESUME = """{said}
 
 请在同一任务里继续，协议同前（卡号 {card}，worktree `{worktree}`，分支 `{branch}`）。"""
 
@@ -151,7 +150,7 @@ class Dispatcher:
 
     @staticmethod
     def task_text(body):
-        for head in (cards.Q_HEAD, cards.A_HEAD):
+        for head in (cards.Q_HEAD, cards.A_HEAD, cards.M_HEAD):
             body = re.sub(rf'^{re.escape(head)}\s*$.*?(?=^## |\Z)', '', body, flags=re.M | re.S)
         return body.strip()
 
@@ -183,15 +182,20 @@ class Dispatcher:
         final = run_dir / f'{attempt}-final.md'
         out = run_dir / f'{attempt}.log'
         ctx = dict(card=card, worktree=wt, branch=branch)
-        if resume:
-            if not rec.get('session') or 'resume' not in spec:
-                prompt = self.task_text(body) + PROTOCOL.format(**ctx) + '\n\n' + self.answers_text(body)
-                key = 'cmd'
-            else:
-                prompt = RESUME.format(answers=self.answers_text(body), **ctx)
-                key = 'resume'
+        answered = cards.answers(body)
+        total = len(cards.messages(body))
+        # 有的 CLI 续聊不用会话号（在同一个 worktree 里「接着上一次」），resume 命令里没有 {session} 就不要求
+        needs_session = any('{session}' in part for part in spec.get('resume', []) if isinstance(part, str))
+        if resume and 'resume' in spec and (rec.get('session') or not needs_session):
+            said = self.said_text(body, skip=rec.get('answers_sent') or (), pending=cards.pending_messages(meta, body))
+            prompt = RESUME.format(said=said or self.said_text(body), **ctx)
+            key = 'resume'
         else:
+            # 第一轮，或续不上原会话：从头给任务，带上至今所有回答和留言
             prompt = self.task_text(body) + PROTOCOL.format(**ctx)
+            said = self.said_text(body, pending=cards.messages(body)) if resume else self.said_text(body, answers=False, pending=cards.pending_messages(meta, body))
+            if said:
+                prompt += '\n\n' + said
             key = 'cmd'
         cmd = self.command(spec, key, prompt=prompt, final=str(final), session=rec.get('session', ''), worktree=wt, card=card)
         timeout = int(meta.get('timeout') or spec.get('timeout') or self.cfg['run_timeout_seconds'])
@@ -205,18 +209,30 @@ class Dispatcher:
         child = subprocess.Popen(cmd, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True)
         sink.close()
         self.children[card] = child
-        self.save(card, pid=child.pid, attempt=attempt, worktree=wt, branch=branch, executor=meta['executor'], log=str(out), final=str(final), started=cards.stamp(), mode=key)
-        cards.update(path, dispatch='running')
+        self.save(card, pid=child.pid, attempt=attempt, worktree=wt, branch=branch, executor=meta['executor'], log=str(out), final=str(final), started=cards.stamp(), mode=key, answers_sent=sorted(answered))
+        # delivered 记的是这一轮提示词里带上的留言数；launch 之后才到的留言留给下一轮
+        cards.update(path, dispatch='running', delivered=total)
         self.event('resumed' if resume else 'started', card, executor=meta['executor'], attempt=attempt, summary=f"{spec.get('agent', meta['executor'])} 第 {attempt} 轮")
 
     @staticmethod
-    def answers_text(body):
+    def answers_text(body, skip=()):
         q, a = cards.questions(body), cards.answers(body)
         lines = []
         for qid, text in q.items():
-            if qid in a:
+            if qid in a and qid not in skip:
                 lines.append(f'- {qid} 问：{text}\n  答：{a[qid]}')
         return '\n'.join(lines)
+
+    @classmethod
+    def said_text(cls, body, skip=(), pending=None, answers=True):
+        """What people told the agent since its last turn: new answers, then messages from the board chat."""
+        parts = []
+        answered = cls.answers_text(body, skip) if answers else ''
+        if answered:
+            parts.append('有人回答了你的问题：\n' + answered)
+        if pending:
+            parts.append('用户在看板的对话窗口里对你说：\n' + '\n'.join(f'- {mid} {text}' for mid, text in pending))
+        return '\n\n'.join(parts)
 
     # ---- finishing --------------------------------------------------------------
     def session_from(self, logfile):
@@ -235,25 +251,28 @@ class Dispatcher:
         rec = self.rec(card)
         session = self.session_from(rec.get('log', '')) or rec.get('session', '')
         path = cards.find(self.board, card)
-        meta, body = cards.read(path) if path else ({}, '')
-        state = meta.get('dispatch')
-        board_status = meta.get('status', '')
-        if state == 'asking' or (path and cards.open_questions(body)):
-            new = 'asking'
-        elif state == 'answered':
-            new = 'answered'  # answered while the worker was still running: resume next pass
-        elif rc == 0 or (rc is None and board_status in ('review', 'accepted')):
-            new = 'done'
-        else:
-            new = 'failed'
+        new = 'done' if rc == 0 else 'failed'
+        if path:
+            # 判断和改写在同一把锁里做，这一刻刚写进来的留言或回答不会被漏掉
+            with cards.edit(path) as box:
+                meta, body = cards.parse(box[0])
+                state = meta.get('dispatch')
+                if state == 'asking' or cards.open_questions(body):
+                    new = 'asking'
+                elif state == 'answered' or cards.pending_messages(meta, body):
+                    new = 'answered'  # answered or messaged while the worker was still running: resume next pass
+                elif rc == 0 or (rc is None and meta.get('status', '') in ('review', 'accepted')):
+                    new = 'done'
+                else:
+                    new = 'failed'
+                if state != new:
+                    box[0] = cards.set_keys(box[0], dispatch=new)
         summary = ''
         try:
             summary = Path(rec.get('final', '')).read_text(errors='replace').strip()[:300]
         except OSError:
             pass
         self.save(card, pid=None, session=session, exit_code=rc, ended=cards.stamp())
-        if path and state != new:
-            cards.update(path, dispatch=new)
         self.event(new, card, exit_code=rc, summary=summary or f'退出码 {rc}')
 
     def reap(self):

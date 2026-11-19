@@ -125,6 +125,37 @@ def _append(text, head, line):
     return text.rstrip('\n') + f'\n\n{head}\n{line}\n'
 
 
+# 留言：人在看板对话窗口里对 Agent 说的话。front matter 的 delivered 记已经送进会话的条数。
+M_HEAD = '## 留言'
+M_LINE = re.compile(r'^- \[(M\d+)\] (.*)$', re.M)
+
+
+def messages(body):
+    return M_LINE.findall(_section(body, M_HEAD))
+
+
+def delivered(meta):
+    try:
+        return max(0, int(meta.get('delivered') or 0))
+    except ValueError:
+        return 0
+
+
+def pending_messages(meta, body):
+    return messages(body)[delivered(meta):]
+
+
+def add_message(path, text, actor='user'):
+    """Record a message for the agent. A finished session is reopened; a live one picks it up after its turn."""
+    with edit(path) as box:
+        meta, body = parse(box[0])
+        mid = f'M{len(messages(body)) + 1}'
+        box[0] = _append(box[0], M_HEAD, f'- [{mid}] {stamp()} | {actor}: {" ".join(str(text).split())}')
+        if meta.get('dispatch') in ('done', 'failed'):
+            box[0] = set_keys(box[0], dispatch='answered')
+    return mid
+
+
 def add_question(path, question, options=(), agent=''):
     with edit(path) as box:
         meta, body = parse(box[0])
