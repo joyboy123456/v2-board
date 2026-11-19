@@ -4,6 +4,7 @@ import {
   AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2, Moon, Sun,
 } from 'lucide-react';
 import { applyTheme, storedTheme, type Theme } from './theme';
+import Chat from './Chat';
 import type { Board, Card, St, Decision } from './types';
 import TaskMap from './Map';
 import Agents from './Agents';
@@ -91,7 +92,7 @@ function TopBar({ b, conn, view, setView, theme, toggleTheme }: { b: Board; conn
         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
       </button>
       <nav className="page-tabs" aria-label="看板视图">
-        {([['agents', '人与产出', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />], ['reports', '验收报告', <ClipboardCheck size={15} key="r" />]] as const).map(([k, l, icon]) =>
+        {([['agents', 'Agent 对话', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />], ['reports', '验收报告', <ClipboardCheck size={15} key="r" />]] as const).map(([k, l, icon]) =>
           <button key={k} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{icon}{l}</button>)}
       </nav>
     </header>
@@ -551,6 +552,8 @@ export default function App() {
   const { board, conn, error, refresh } = useBoard();
   const [tab, setTab] = useParam('tab', 'h');
   const [view, setView] = useParam('view', 'agents');
+  const [chatAgent, setChatAgent] = useParam('agent', '');
+  const [chatSession, setChatSession] = useParam('chat', '');
   const [theme, setTheme] = useState<Theme>(storedTheme);
   const toggleTheme = () => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -592,10 +595,15 @@ export default function App() {
       {board.intervention.mode === 'demo' && <div className="intervention-banner demo-banner demo-global-banner">隔离演示 · 不连接真实 Agent</div>}
       {error && <div className="errors" role="alert"><p><AlertTriangle size={14} />{error}，页面上是上一次读到的内容。</p></div>}
       {board.errors.length > 0 && <div className="errors">{board.errors.map(e => <p key={e}><AlertTriangle size={14} />{e}</p>)}</div>}
-      <div className="cols">
-        <NeedYou b={board} open={setOpen} />
+      <div className={view === 'agents' ? 'cols chat-cols' : 'cols'}>
+        <NeedYou b={board} open={key => {
+          // 有提问的卡直接进它的对话窗口；其他的照旧开详情
+          const card = byKey.get(key);
+          const agent = board.intervention.executors?.find(e => e.id === card?.executor)?.agent;
+          if (card?.questions?.length && agent) { setView('agents'); setChatAgent(agent); setChatSession(key); } else setOpen(key);
+        }} />
         <main className="center">
-      {view === 'agents' ? <Agents board={board} jump={card => {
+      {view === 'agents' ? <Chat board={board} refresh={refresh} agentId={chatAgent} setAgentId={setChatAgent} sessionKey={chatSession} setSessionKey={setChatSession} jump={card => {
         const target = board.cards.find(c => c.key === card || c.id === card);
         setView('tasks'); if (target) { setFocus(target.key); setTab(target.sprint); setOpen(target.key); }
       }} /> : view === 'reports' ? <Reports b={board} open={setOpen} sel={report} setSel={setReport} /> : view === "progress" ? <ProjectProgress board={board} open={setOpen} /> : <>
@@ -607,7 +615,7 @@ export default function App() {
       <SprintPanel b={board} tab={tab} setTab={setTab} filter={filter} setFilter={setFilter} open={setOpen} now={board.now} />
       </>}
         </main>
-        <LiveRail b={board} open={setOpen} />
+        {view !== 'agents' && <LiveRail b={board} open={setOpen} />}
       </div>
       <footer>Agent 协作看板 · 回答操作按实例模式开放 · 数据来自任务卡与 git · 有变化时自动推送 · 北京时间（UTC+8）</footer>
       {current && <Drawer b={board} c={current} now={board.now} close={close} open={setOpen} refresh={refresh} />}

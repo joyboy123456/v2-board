@@ -17,7 +17,7 @@ export interface Card {
   last: string; stamp: string; stampFromFile: boolean; source: string;
   reports: Report[]; commits: Commit[]; gitNote: string; baseline: string;
   decisions: Decision[]; body: string; progress: string; legacy: boolean;
-  dispatch?: string; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; cardRevision: string; repairSource?: string; repairReport?: string; repairItem?: string;
+  dispatch?: string; executor?: string; questions?: Question[]; answerHistory: AnswerHistory[]; chatLog?: ChatEntry[]; cardRevision: string; repairSource?: string; repairReport?: string; repairItem?: string;
 }
 export interface Question { id: string; time: string; who: string; text: string; options: string[] }
 export interface AnswerHistory { id: string; time: string; actor: string; answer: string }
@@ -35,5 +35,6 @@ export interface Board {
 export type Verdict = 'pass' | 'fail' | 'partial' | 'pending' | 'note';
 export interface AccShot { alt: string; src: string; missing: boolean; kind?: 'image' | 'video' }
 export interface AccItem { title: string; cards: string[]; verdict: Verdict; verdictText: string; text: string; shots: AccShot[] }
-export interface Executor { id: string; name: string; browser: 'verified' | 'unknown' }
+export interface Executor { id: string; name: string; browser: 'verified' | 'unknown'; agent?: string; label?: string; resume?: boolean }
+export interface ChatEntry { kind: 'question' | 'answer' | 'message'; id: string; time: string; actor: string; text: string; options?: string[]; open?: boolean; delivered?: boolean }
 export interface AccReport { id: string; revision: string; title: string; date: string; by: string; site: string; shotsNote: string; intro: string; items: AccItem[]; counts: Partial<Record<Verdict, number>>; cards: string[] }
