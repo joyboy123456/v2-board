@@ -457,13 +457,14 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
         newline = '\r\n' if b'\r\n' in raw else '\n'
         front_match, front, dispatch_line, dispatch_offset, dispatch_ending = _dispatch_frontmatter(text)
         body = text[front_match.end():]
-        if mode == 'demo':
-            try:
-                demo_card = is_demo_card(bp.split_front(text)[0])
-            except (ValueError, TypeError):
-                demo_card = False
-            if not demo_card:
-                raise InterventionError(403, 'not_demo_card', '演示模式只能改写合成的演示卡片，这张卡没有改动。')
+        try:
+            meta = bp.split_front(text)[0]
+        except (ValueError, TypeError):
+            meta = None
+        if mode == 'demo' and not (meta is not None and is_demo_card(meta)):
+            raise InterventionError(403, 'not_demo_card', '演示模式只能改写合成的演示卡片，这张卡没有改动。')
+        if meta is None:  # 看板读不懂的 frontmatter 在写入之前就拒绝，不能先存了答案再报错
+            raise InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 格式不明确，未写入。')
         questions, answers, answer_heading = _protocol_sections(body)
         if not questions:
             raise InterventionError(409, 'malformed_protocol', '任务卡没有可回答的问题，未写入。')
@@ -501,6 +502,10 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
         updated_raw = updated_text.encode('utf-8')
         if len(updated_raw) > MAX_CARD_BYTES:
             raise InterventionError(413, 'card_too_large', '任务卡超过可安全修改的大小限制。')
+        try:
+            card_meta = bp.split_front(updated_text)[0]
+        except (ValueError, TypeError):
+            raise InterventionError(409, 'malformed_frontmatter', '任务卡 frontmatter 无法安全更新。')
         # dispatcher 对卡片文件本身加锁，所以原地改写而不是换文件；先覆盖再截断，
         # 写到一半失败就把原内容写回去，不留下空卡或半张卡。
         try:
@@ -512,7 +517,7 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
                 pass
             raise
         revision = hashlib.sha256(updated_raw).hexdigest()
-        return dict(card_key=card_key, question_id=question_id, revision=revision, card_body=updated_body, card_meta=bp.split_front(updated_text)[0],
+        return dict(card_key=card_key, question_id=question_id, revision=revision, card_body=updated_body, card_meta=card_meta,
                     remaining=remaining, dispatch=dispatch,
                     message='演示答案已记录；不会连接或启动 Agent。' if mode == 'demo' else '答案已记录，等待 dispatcher 检查。')
     except InterventionError:

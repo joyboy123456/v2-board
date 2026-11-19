@@ -105,6 +105,16 @@ class InterventionTest(unittest.TestCase):
         self.assertIn(' | user: A useful answer\n', text)
         self.assertIn('dispatch: "asking"', text)
 
+    def test_unreadable_front_matter_is_rejected_before_anything_is_written(self):
+        # 看板解析不了的 frontmatter（这里是带连字符的键）：不能先把答案存下来再报 500。
+        self.card.write_text(CARD.replace('executor: Worker A', 'bad-key: value'), encoding='utf-8')
+        before = self.card.read_bytes()
+        env = {'V2_BOARD_DIR': str(self.root), 'V2_INTERVENTION_MODE': 'enabled', 'V2_INTERVENTION_TOKEN': 't'}
+        self.error('malformed_frontmatter', lambda: self.write(mode='enabled', environ=env))
+        self.assertEqual(self.card.read_bytes(), before)
+        self.error('not_demo_card', self.write, 403)
+        self.assertEqual(self.card.read_bytes(), before)
+
     def test_dispatch_changes_only_after_all_pending_questions_are_answered(self):
         first = self.write(self.payload('Q1', 'one'))
         self.assertEqual((first['remaining'], first['dispatch']), (1, 'asking'))
