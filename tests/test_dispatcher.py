@@ -264,10 +264,16 @@ class DispatcherTest(unittest.TestCase):
         for path in (masked, plain):
             cards.update(path, dispatch='done')
             path.chmod(0o644)
-        with patch('os.listxattr', lambda path: ['system.posix_acl_access'] if Path(path) == masked else []):
+        outside = self.tmp / 'outside.md'  # 看板里的符号链接指向看板外面的文件：不改它的权限
+        outside.write_text(masked.read_text())
+        outside.chmod(0o644)
+        (self.board / 'P3.md').symlink_to(outside)
+        acl = {masked.stat().st_ino, outside.stat().st_ino}
+        with patch('os.listxattr', lambda fd: ['system.posix_acl_access'] if os.fstat(fd).st_ino in acl else []):
             d.tick()
         self.assertEqual(masked.stat().st_mode & 0o777, 0o664)  # 有 ACL 的卡：把掩码放回读写
         self.assertEqual(plain.stat().st_mode & 0o777, 0o644)  # 没有 ACL 的不动
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o644)
 
     def test_stop_before_start_and_stale_requests(self):
         queued = self.write('S3', 'ok', 'stop: "2026-11-19 23:00:00 CST"\n')

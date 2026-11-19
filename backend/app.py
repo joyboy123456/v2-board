@@ -573,7 +573,7 @@ async def api_intervention_answer(request: Request):
         _authorize(mode, request)
         payload = await interventions.request_json(request)
         result = await asyncio.to_thread(interventions.write_answer, BOARD, payload, mode)
-        card_body = result.pop('card_body')
+        card_body, card_meta = result.pop('card_body'), result.pop('card_meta')
         if hub.board is not None:
             board = dict(hub.board)
             cards = []
@@ -584,7 +584,7 @@ async def api_intervention_answer(request: Request):
                         dispatch=result['dispatch'],
                         questions=open_questions(card_body) if result['dispatch'] == 'asking' else [],
                         answerHistory=interventions.answer_history(card_body),
-                        chatLog=chat.chat_log(card, card_body),
+                        chatLog=chat.chat_log(card_meta, card_body),
                         cardRevision=result['revision'],
                         body=card_body,
                     )

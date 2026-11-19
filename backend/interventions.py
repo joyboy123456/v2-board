@@ -512,7 +512,7 @@ def write_answer(root: Path, payload: dict, mode: str, environ=None) -> dict:
                 pass
             raise
         revision = hashlib.sha256(updated_raw).hexdigest()
-        return dict(card_key=card_key, question_id=question_id, revision=revision, card_body=updated_body,
+        return dict(card_key=card_key, question_id=question_id, revision=revision, card_body=updated_body, card_meta=bp.split_front(updated_text)[0],
                     remaining=remaining, dispatch=dispatch,
                     message='演示答案已记录；不会连接或启动 Agent。' if mode == 'demo' else '答案已记录，等待 dispatcher 检查。')
     except InterventionError:

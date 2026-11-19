@@ -18,7 +18,9 @@ def card(dispatch='done', extra='', body='实现功能。\n'):
 
 class ChatTest(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
         (self.root / 'fix').mkdir()
         self.path = self.root / 'fix' / 'F1.md'
         self.config = self.root / 'dispatch.json'
@@ -26,6 +28,7 @@ class ChatTest(unittest.TestCase):
                     'V2_REPAIR_ENABLED': '1', 'V2_REPAIR_BASE': 'main', 'V2_REPAIR_REPO': '/srv/app', 'DISPATCH_CONFIG': str(self.config)}
         self.config.write_text(json.dumps({'board': str(self.root), 'executors': {
             'codex-astra': {'agent': 'Codex gpt-6.2-astra high', 'cmd': ['codex', 'exec', '-m', 'gpt-6.2-astra', '{prompt}'], 'resume': ['codex', 'exec', 'resume', '{session}', '{prompt}']},
+            'codex-inline': {'agent': 'Codex', 'cmd': ['codex', 'exec', '--model=gpt-6.2-astra', '{prompt}']},
             'kiro': {'agent': 'Kiro', 'cmd': ['kiro-cli', 'chat', '{prompt}']}}}))
 
     def send(self, text='把按钮改成蓝色', **over):
@@ -153,12 +156,16 @@ class ChatTest(unittest.TestCase):
         payload = lambda: dict(card_key='fix/F1', message='你好', expected_revision=hashlib.sha256(self.path.read_bytes()).hexdigest())
         self.assertEqual(self.code(lambda: chat.write_message(self.root, payload(), 'demo', env)), 'not_demo_card')
         self.path.write_text(card('done', 'demo: true\n'))
-        self.assertEqual(chat.write_message(self.root, payload(), 'demo', env)['dispatch'], 'done')  # 演示不唤醒任何 Agent
+        result = chat.write_message(self.root, payload(), 'demo', env)
+        self.assertEqual((result['dispatch'], result['message_id']), ('done', 'M1'))  # 留言记下了，但演示不唤醒任何 Agent
+        self.assertIn('不会连接或启动 Agent', result['message'])
+        self.assertIn('| user: 你好', self.path.read_text())
 
     def test_executor_agents(self):
         agents = chat.executor_agents(self.root, 'enabled', self.env)
         self.assertEqual(agents['codex-astra'], dict(agent='codex-gpt-6.2-astra', label='Codex gpt-6.2-astra high', resume=True))
         self.assertEqual((agents['kiro']['agent'], agents['kiro']['resume']), ('kiro', False))
+        self.assertEqual(agents['codex-inline']['agent'], agents['codex-astra']['agent'])  # --model=x 和 -m x 归到同一个 Agent
         self.assertEqual(chat.executor_agents(self.root, 'demo', self.env), {})
         self.config.write_text(json.dumps({'board': '/elsewhere', 'executors': {'x': {'cmd': []}}}))
         self.assertEqual(chat.executor_agents(self.root, 'enabled', self.env), {})

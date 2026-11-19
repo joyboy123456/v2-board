@@ -59,6 +59,16 @@ def delivered_count(meta: dict) -> int:
         return 0
 
 
+def _model(cmd: list[str]) -> str:
+    """执行器命令里的模型名：-m x、--model x、--model=x 都认。"""
+    for i, arg in enumerate(cmd):
+        if arg in ('-m', '--model') and i + 1 < len(cmd):
+            return cmd[i + 1]
+        if arg.startswith('--model='):
+            return arg.split('=', 1)[1]
+    return ''
+
+
 def chat_log(meta: dict, body: str) -> list[dict]:
     """卡片里的问答和留言，按写入顺序；前端再和执行记录按时间合在一起。"""
     out = []
@@ -102,7 +112,7 @@ def executor_agents(root: Path, mode: str, environ=None) -> dict[str, dict]:
             if not isinstance(name, str) or not repairs.EXECUTOR_RE.fullmatch(name) or not isinstance(spec, dict):
                 continue
             cmd = [str(x) for x in spec.get('cmd', [])]
-            model = next((cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg in ('-m', '--model')), '')
+            model = _model(cmd)
             label = str(spec.get('agent') or name)
             # resume 可用才算能续聊；没有的话 dispatcher 只能从头再给一遍任务
             out[name] = dict(agent=normalize(label, model)['id'], label=label, resume=isinstance(spec.get('resume'), list) and bool(spec['resume']))

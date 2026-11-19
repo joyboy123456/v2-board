@@ -225,7 +225,7 @@ class LoginApiTest(unittest.TestCase):
         self.assertNotEqual(status, 401, data)
 
     def test_stream_closes_when_the_login_expires(self):
-        cookie = auth.issue(self.env, now=time.time() - auth.TTL + 1.5)  # 还有 1.5 秒到期
+        cookie = auth.issue(self.env, now=time.time() - auth.TTL + 3)  # 到期时间按整秒取，还剩 2 到 3 秒
         chunks = []
 
         async def run():

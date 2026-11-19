@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -165,11 +166,17 @@ class Dispatcher:
         Raising the group bits of a file that has an ACL raises its mask; files without an ACL are left alone.
         """
         try:
-            mode = path.stat().st_mode
-            if mode & 0o060 != 0o060 and 'system.posix_acl_access' in os.listxattr(path):
-                os.chmod(path, (mode & 0o7777) | 0o060)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)  # 卡片是符号链接就不碰：它指向的可能是看板外面的文件
+        except OSError:
+            return
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o060 != 0o060 and 'system.posix_acl_access' in os.listxattr(fd):
+                os.fchmod(fd, (info.st_mode & 0o7777) | 0o060)
         except OSError:
             pass
+        finally:
+            os.close(fd)
 
     def halt(self, card):
         """Someone pressed 停止 on the board. TERM first, so agent-run can pass it on and record the run; KILL what is left after the grace period.
@@ -321,7 +328,7 @@ class Dispatcher:
         else:
             # 第一轮，或续不上原会话：从头给任务，带上至今所有回答和留言
             prompt = self.task_text(body) + PROTOCOL.format(**ctx)
-            said = self.said_text(body, pending=cards.messages(body)) if resume else self.said_text(body, answers=False, pending=cards.pending_messages(meta, body))
+            said = self.said_text(body, pending=cards.messages(body) if resume else cards.pending_messages(meta, body))
             if said:
                 prompt += '\n\n' + said
             key = 'cmd'
@@ -353,10 +360,10 @@ class Dispatcher:
         return '\n'.join(lines)
 
     @classmethod
-    def said_text(cls, body, skip=(), pending=None, answers=True):
+    def said_text(cls, body, skip=(), pending=None):
         """What people told the agent since its last turn: new answers, then messages from the board chat."""
         parts = []
-        answered = cls.answers_text(body, skip) if answers else ''
+        answered = cls.answers_text(body, skip)
         if answered:
             parts.append('有人回答了你的问题：\n' + answered)
         if pending:
