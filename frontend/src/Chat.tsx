@@ -4,6 +4,7 @@ import type { Board, Card, ChatEntry, Executor } from './types';
 import { COLORS, STATE, TYPE, cst, get, useAgentFeed } from './Agents';
 import type { Agent, Msg, Run } from './Agents';
 import { contiguousSeq } from './run-stream';
+import { expired, needsToken } from './lib';
 
 const DISPATCH: Record<string, string> = { queued: '排队中', running: '运行中', asking: '等你回答', answered: '马上继续', done: '本轮完成', failed: '失败', held: '已暂停', closed: '已关闭' };
 const COMPOSER: Record<string, string> = {
@@ -62,6 +63,7 @@ async function post(url: string, token: string, body: unknown): Promise<{ ok: bo
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = 'Bearer ' + token;
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  expired(response.status);
   return { ok: response.ok, status: response.status, data: await response.json().catch(() => ({})) };
 }
 function explain(failure: Failure) {
@@ -130,12 +132,13 @@ function NewSession({ agent, execs, base, token, setToken, refresh, done }: { ag
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
+  const needToken = needsToken('enabled');
   const send = async () => {
-    if (!text.trim() || !token.trim() || busy) return;
+    if (!text.trim() || (needToken && !token.trim()) || busy) return;
     if (!window.confirm('确认开这个新会话？调度器有空槽位时会启动真实的 ' + agent.name + '，并为它建一个独立的 worktree。')) return;
     setBusy(true); setFailure(null);
     try {
-      const result = await post('/api/interventions/session', token, { executor, message: text });
+      const result = await post('/api/interventions/session', needToken ? token : '', { executor, message: text });
       if (!result.ok) { setFailure({ status: result.status, detail: result.data.detail || '' }); return; }
       await refresh();
       done(result.data.card_key);
@@ -146,9 +149,9 @@ function NewSession({ agent, execs, base, token, setToken, refresh, done }: { ag
     <div className="chat-new">
       {execs.length > 1 && <label>用哪个执行器<select value={executor} onChange={e => setExecutor(e.target.value)}>{execs.map(e => <option key={e.id} value={e.id}>{e.label || e.name}（{e.id}）</option>)}</select></label>}
       <label>要它做什么<textarea rows={7} value={text} maxLength={4000} onChange={e => setText(e.target.value)} placeholder="把事情说清楚：现象、想要的结果、不要动什么。" /></label>
-      <TokenField token={token} setToken={setToken} />
+      {needToken && <TokenField token={token} setToken={setToken} />}
       {failure && <p className="chat-error" role="alert"><AlertTriangle size={14} />{explain(failure)}</p>}
-      <button className="chat-send" disabled={!text.trim() || !token.trim() || busy} onClick={send}>{busy ? '发送中…' : '开始会话'}</button>
+      <button className="chat-send" disabled={!text.trim() || (needToken && !token.trim()) || busy} onClick={send}>{busy ? '发送中…' : '开始会话'}</button>
     </div>
   </div>;
 }
@@ -188,7 +191,7 @@ function Conversation({ agent, session, mode, feed, token, setToken, refresh, ju
   const shown = all ? items : items.slice(-250);
   useEffect(() => { if (stick.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [items.length]);
   const writable = mode !== 'readonly' && session.live && !!card;
-  const needToken = mode === 'enabled';
+  const needToken = needsToken(mode);
   const submit = async (url: string, body: Record<string, string>, id: string, after: () => void) => {
     if (busy || (needToken && !token.trim())) return;
     setBusy(id); setFailure(null); setNote('');

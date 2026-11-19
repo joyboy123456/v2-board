@@ -4,6 +4,7 @@ import type { Board } from './types';
 import { MergeProgress } from './Progress';
 import type { MergeState } from './types';
 import { contiguousSeq, mergeBySeq } from './run-stream';
+import { checkSession, expired } from './lib';
 
 export type Run = { merge?: MergeState; id: string; agent_id: string; card: string; agent: string; model: string; reasoning?: string; state: string; branch: string; started_at: string; ended_at?: string; duration_seconds?: number; commits?: number; changed_files?: number; final_summary?: string; current_activity?: string; last_message?: string; tool_calls?: number; recent_files?: string[]; backfilled?: boolean; reason?: string; exit_code?: number; progress?: { summary: string; step?: number; total?: number }; latest_commit?: { subject: string }; log_tail?: string };
 export type Agent = { id: string; name: string; model: string; reasoning: string; availability: string; workload: string; current_run: Run | null; latest_run: Run | null; recent_runs: Run[]; total_runs: number; success_rate: number | null; totals: { commits: number; changed_files: number; completed_cards: number }; latest_commit?: { subject: string } };
@@ -20,7 +21,7 @@ function elapsed(run: Run, clock: number) {
   const seconds = Math.max(0, Math.floor(run.duration_seconds ?? ((run.ended_at ? Date.parse(run.ended_at) : clock) - Date.parse(run.started_at)) / 1000));
   return seconds < 60 ? `${seconds} 秒` : seconds < 3600 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds / 60) % 60} 分`;
 }
-export async function get<T,>(url: string, signal?: AbortSignal): Promise<T> { const response = await fetch(url, { signal }); if (!response.ok) throw new Error(`读取失败 (${response.status})`); return response.json(); }
+export async function get<T,>(url: string, signal?: AbortSignal): Promise<T> { const response = await fetch(url, { signal }); expired(response.status); if (!response.ok) throw new Error(`读取失败 (${response.status})`); return response.json(); }
 
 export function useAgentFeed() {
   const [data, setData] = useState<Data | null>(null);
@@ -35,6 +36,7 @@ export function useAgentFeed() {
   useEffect(() => {
     let mounted = true;
     const es = new EventSource('/api/stream');
+    es.addEventListener('error', () => { void checkSession(); });
     const refresh = () => {
       setConnection('live'); setGeneration(n => n + 1);
       const requestedRevision = revision.current;

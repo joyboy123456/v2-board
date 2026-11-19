@@ -20,5 +20,5 @@ COPY --from=frontend --chown=board:board /build/frontend/dist/ ./frontend/dist/
 USER board
 WORKDIR /app/backend
 EXPOSE 3160
-HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3160/api/board', timeout=2)"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3160/api/session', timeout=2)"]
 CMD ["nice", "-n", "19", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3160"]

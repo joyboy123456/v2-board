@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type ReactNode } from 'react';
 import {
   Activity, Cpu, MemoryStick, HardDrive, GitBranch, GitCommitHorizontal, GitMerge, ChevronRight,
-  AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2, Moon, Sun,
+  AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2, Moon, Sun, LogOut,
 } from 'lucide-react';
 import { applyTheme, storedTheme, type Theme } from './theme';
+import { auth, checkSession, expired, logout, needsToken } from './lib';
 import Chat from './Chat';
 import type { Board, Card, St, Decision } from './types';
 import TaskMap from './Map';
@@ -21,6 +22,7 @@ function useBoard() {
   const refresh = useCallback(async () => {
     try {
       const response = await fetch('/api/board', { cache: 'no-store' });
+      if (expired(response.status)) return undefined;
       if (!response.ok) throw new Error('board request failed');
       const next = await response.json() as Board;
       setBoard(next);
@@ -35,7 +37,7 @@ function useBoard() {
     void refresh();
     const es = new EventSource('/api/stream');
     es.onopen = () => setConn('live');
-    es.onerror = () => setConn('retry');
+    es.onerror = () => { setConn('retry'); void checkSession(); };
     es.addEventListener('board', e => { setBoard(JSON.parse((e as MessageEvent).data)); setConn('live'); setError(''); });
     es.addEventListener('sys', e => { const d = JSON.parse((e as MessageEvent).data); setBoard(b => b ? { ...b, ...d } : b); setConn('live'); });
     return () => es.close();
@@ -91,6 +93,7 @@ function TopBar({ b, conn, view, setView, theme, toggleTheme }: { b: Board; conn
       <button className="theme-toggle" onClick={toggleTheme} aria-label={`切换到${other}模式`} title={`切换到${other}模式`}>
         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
       </button>
+      {auth.session && <button className="theme-toggle logout" onClick={() => { void logout(); }} aria-label="退出登录" title="退出登录"><LogOut size={16} /></button>}
       <nav className="page-tabs" aria-label="看板视图">
         {([['agents', 'Agent 对话', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />], ['reports', '验收报告', <ClipboardCheck size={15} key="r" />]] as const).map(([k, l, icon]) =>
           <button key={k} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{icon}{l}</button>)}
@@ -301,7 +304,7 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
   };
   const submit = async (questionId: string) => {
     const answer = answers[questionId] || '';
-    if (!answer.trim() || pending || mode === 'readonly' || (mode === 'enabled' && !token.trim())) return;
+    if (!answer.trim() || pending || mode === 'readonly' || (needsToken(mode) && !token.trim())) return;
     const confirmation = mode === 'demo'
       ? '确认记录这条演示回答？只会更新合成卡片，不会连接、启动或恢复真实 Agent。'
       : '确认提交这条回答？答案会写入卡片；dispatcher 之后检查时可能恢复原 worker 会话。看板不会调用 Hark API，也不会停止 worker。';
@@ -311,13 +314,14 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
     setSuccess('');
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (mode === 'enabled') headers.Authorization = `Bearer ${token}`;
+      if (needsToken(mode)) headers.Authorization = `Bearer ${token}`;
       const response = await fetch('/api/interventions/answer', {
         method: 'POST',
         headers,
         body: JSON.stringify({ card_key: c.key, question_id: questionId, answer, expected_revision: c.cardRevision }),
       });
       const payload = await response.json().catch(() => ({})) as { error?: string; detail?: string; message?: string };
+      if (expired(response.status)) return;
       if (!response.ok) {
         if (mounted.current) setError({ status: response.status, code: payload.error || '', detail: payload.detail || '' });
         return;
@@ -346,10 +350,10 @@ function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () =
           : error?.detail || '提交失败；输入仍保留。刷新看板后再重试。';
   return (
     <section className="intervention-panel" aria-label="回答 Agent 问题">
-      <p className="intervention-model">个人 Agent 与 Hark 负责路由，服务器 Agent 负责执行；你在这里直接回答卡片问题。看板不会调用真实 Hark API，也不提供 worker 停止控制。</p>
+      <p className="intervention-model">个人 Agent 与 Hark 负责路由，服务器 Agent 负责执行；你在这里直接回答卡片问题。看板不会调用真实 Hark API；要停掉正在跑的 Agent，去「Agent 对话」页点「停止」。</p>
       {mode === 'readonly' && <p className="intervention-readonly">只读模式：回答操作已禁用。需要显式启用写入，或使用带演示标记的隔离数据。</p>}
       {mode === 'demo' && <p className="intervention-note">演示回答只修改合成任务卡；这里不会启动 dispatcher 或 worker，因此不代表真实恢复执行。</p>}
-      {mode === 'enabled' && <label className="intervention-token">写入令牌 <small>仅保存在当前页面内存，不写入存储或 URL</small>
+      {needsToken(mode) && <label className="intervention-token">写入令牌 <small>仅保存在当前页面内存，不写入存储或 URL</small>
         <input type="password" autoComplete="new-password" value={token} onChange={e => setToken(e.target.value)} />
       </label>}
       {questions.map(question => (

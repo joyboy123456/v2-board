@@ -163,12 +163,15 @@ SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 
 | `POST /api/interventions/repair` | 把一条未通过、部分通过或未完成的验收项指派给某个执行器：在 `fix/` 下新建一张 `REPAIR-*` 修复卡，原卡和原报告不动 |
 | `POST /api/interventions/message` | 「Agent 对话」页里对 Agent 说话：追加到卡片的 `## 留言`。看板不碰 Agent 进程；dispatcher 在这一轮结束后用执行器的 `resume` 命令接着同一个会话送达，已完成或失败的会话会被重新排进队列（`answered`） |
 | `POST /api/interventions/stop` | 「Agent 对话」页的「停止」：只在卡片 front matter 里记一个 `stop` 请求。看板碰不到 Agent 进程；dispatcher 下一次巡检时结束这一轮（先 TERM，`stop_grace_seconds` 秒后还在就 KILL），把会话置为 `held` 并标 `stopped`，worktree 和会话号保留。之后留言会接着同一个会话继续 |
+| `GET /api/session`、`POST /api/login`、`POST /api/logout` | 登录。配了密码的实例，没登录时 `/api/` 下的读接口一律回 401 `login_required`，页面显示登录页；输对密码后发一个 30 天有效的 HttpOnly cookie（签名密钥由密码派生，不落盘，改密码即全部失效）。登录后的写操作不用再填令牌，仍然要过同源检查。脚本和其他 Agent 不用 cookie，带 `Authorization: Bearer <写入令牌>` 读写。同一来源 5 分钟内输错 8 次会被暂时拒绝 |
 | `POST /api/interventions/session` | 给某个执行器开一个新会话：在 `chat/` 下写一张 `dispatch: queued` 的卡，从 `V2_REPAIR_BASE` 开独立 worktree；需要同时开启指派修复 |
 
 | 环境变量 | 说明 |
 | --- | --- |
 | `V2_INTERVENTION_MODE` | `readonly`（默认）、`demo` 或 `enabled`；后两者都必须同时显式设置 `V2_BOARD_DIR` |
 | `V2_INTERVENTION_TOKEN` | `enabled` 模式必填，请求用 `Authorization: Bearer` 携带；不写进卡片和日志 |
+| `V2_BOARD_PASSWORD` | 看板的登录密码。不配就用 `V2_INTERVENTION_TOKEN` 当密码；两个都没有（只读、演示实例）不要求登录 |
+| `V2_BOARD_LOGIN` | 设为 `0` 关掉登录，回到「谁都能看、写操作填令牌」 |
 | `V2_REPAIR_ENABLED=1` | 在 `enabled` 模式下另外开启指派修复 |
 | `V2_REPAIR_BASE` | 验收项没有指向看板上存在的任务卡时（没写「卡：」，或写的卡号在看板上找不到）修复分支的起点，比如线上部署所在的分支。不设就不能指派这类验收项；只在 `enabled` 模式生效 |
 | `V2_REPAIR_REPO` | 只用于上面这类不挂原卡的修复卡：登记的仓库路径，写 dispatcher 所在机器上的绝对路径；不设时取 `V2_REPO_DIR`。基于原卡的修复不用它 |

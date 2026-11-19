@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 import { Wrench, ClipboardCheck, CircleCheck, CircleX, CircleDashed, CircleAlert, ImageOff, X, Globe, User, Camera, Video } from 'lucide-react';
 import type { AccItem, AccReport, AccShot, Board, Card, Verdict } from './types';
-import { md } from './lib';
+import { expired, md, needsToken } from './lib';
 
 export const VERDICT_LABEL: Record<Verdict, string> = { pass: '通过', fail: '未通过', partial: '部分通过', pending: '未完成', note: '说明' };
 const VERDICT_ORDER: Verdict[] = ['fail', 'partial', 'pending', 'pass', 'note'];
@@ -173,10 +173,11 @@ function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[];
     try {
       const res = await fetch('/api/interventions/repair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(iv.mode === 'enabled' ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(needsToken(iv.mode) ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ card_key: c?.key || '', expected_revision: c?.cardRevision || '', report_id: r.id, expected_report_revision: r.revision, item_index: index, executor, instructions: notes, requires_browser: browser, test_mode: mode }),
       });
       const data = await res.json().catch(() => ({}));
+      if (expired(res.status)) { setBusy(false); return; }
       if (!res.ok) setError(data.detail || `提交失败（${res.status}）`);
       else setDone(data);
     } catch { setError('网络错误，未提交。'); }
@@ -213,11 +214,11 @@ function RepairForm({ b, cands, r, index, it, open }: { b: Board; cands: Card[];
           <label>补充说明（可不填）
             <textarea value={notes} maxLength={2000} onChange={e => setNotes(e.target.value)} placeholder="比如：先看画布节点的图片加载逻辑" />
           </label>
-          {iv.mode === 'enabled' && <label>写入令牌<input type="password" value={token} autoComplete="off" onChange={e => setToken(e.target.value)} /></label>}
+          {needsToken(iv.mode) && <label>写入令牌<input type="password" value={token} autoComplete="off" onChange={e => setToken(e.target.value)} /></label>}
           {error && <p className="repair-err">{error}</p>}
           <div className="repair-act">
             <button onClick={() => setOn(false)} disabled={busy}>取消</button>
-            <button className="primary" onClick={submit} disabled={busy || !executor || (iv.mode === 'enabled' && !token)}>{busy ? '提交中…' : '确认指派'}</button>
+            <button className="primary" onClick={submit} disabled={busy || !executor || (needsToken(iv.mode) && !token)}>{busy ? '提交中…' : '确认指派'}</button>
           </div>
         </div>}
     </div>

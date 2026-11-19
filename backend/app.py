@@ -16,7 +16,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.requests import HTTPConnection
 import acceptance
+import auth
 import chat
 import repairs
 from fastapi.staticfiles import StaticFiles
@@ -367,6 +369,32 @@ class Hub:
 
 hub = Hub()
 app = FastAPI(title='V2 开发看板', docs_url=None, redoc_url=None)
+login_throttle = auth.Throttle()
+OPEN_API = ('/api/session', '/api/login', '/api/logout')
+
+
+class LoginGate:
+    """开了登录以后，没登录的请求读不到 /api/ 下的任何数据。页面本身和静态资源照常给，由前端显示登录页。
+
+    /api/interventions/ 不在这里拦：写接口自己校验「已登录或带写入令牌」，报错格式保持原样。
+    纯 ASGI 中间件，不包装响应，SSE 长连接不受影响。
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get('path', '') if scope['type'] == 'http' else ''
+        if path.startswith('/api/') and path not in OPEN_API and not path.startswith('/api/interventions/'):
+            conn = HTTPConnection(scope)
+            if not auth.allowed(conn.cookies.get(auth.COOKIE, ''), conn.headers.get('authorization', '')):
+                denied = JSONResponse({'error': 'login_required', 'detail': '请先登录看板。'}, status_code=401, headers={'Cache-Control': 'no-store'})
+                await denied(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(LoginGate)
 
 
 @app.on_event('startup')
@@ -385,6 +413,59 @@ async def stop():
 
 def now_cst():
     return datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _https(request: Request) -> bool:
+    if os.environ.get('V2_INTERVENTION_TRUST_PROXY_HEADERS') == '1' and request.headers.get('x-forwarded-proto', '').strip().lower() == 'https':
+        return True
+    return request.url.scheme == 'https'
+
+
+def _authorize(mode: str, request: Request) -> None:
+    """写操作：已登录的浏览器靠 cookie，脚本和没开登录的实例靠写入令牌。跨站请求在这之前已经被来源检查拒掉。"""
+    if mode == 'enabled' and auth.session_ok(request.cookies.get(auth.COOKIE, '')):
+        return
+    interventions.authorize(mode, request.headers.get('authorization', ''))
+
+
+@app.get('/api/session')
+async def api_session(request: Request):
+    need = auth.required()
+    authed = not need or auth.session_ok(request.cookies.get(auth.COOKIE, ''))
+    return JSONResponse({'login': need, 'authed': authed}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/login')
+async def api_login(request: Request):
+    try:
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        payload = await interventions.request_json(request)
+    except interventions.InterventionError as error:
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status)
+    if not auth.required():
+        return JSONResponse({'ok': True, 'login': False})
+    client = request.client.host if request.client else ''
+    if login_throttle.blocked(client):
+        return JSONResponse({'error': 'too_many_attempts', 'detail': '密码输错的次数太多，请 5 分钟后再试。'}, status_code=429, headers={'Retry-After': str(auth.WINDOW)})
+    if set(payload) != {'password'} or not auth.password_ok(payload['password']):
+        login_throttle.fail(client)
+        await asyncio.sleep(.5)
+        return JSONResponse({'error': 'bad_password', 'detail': '密码不对。'}, status_code=401)
+    response = JSONResponse({'ok': True, 'login': True}, headers={'Cache-Control': 'no-store'})
+    response.set_cookie(auth.COOKIE, auth.issue(), max_age=auth.TTL, path='/', httponly=True, samesite='lax', secure=_https(request))
+    return response
+
+
+@app.post('/api/logout')
+async def api_logout(request: Request):
+    try:
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+    except interventions.InterventionError as error:
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status)
+    response = JSONResponse({'ok': True})
+    response.delete_cookie(auth.COOKIE, path='/')
+    return response
 
 
 @app.get('/api/board')
@@ -411,7 +492,7 @@ async def api_intervention_repair(request: Request):
             raise interventions.InterventionError(503, 'repair_disabled', '看板未开启指派修复。')
         interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
         interventions.validate_content_type(request.headers.get('content-type', ''))
-        interventions.authorize(mode, request.headers.get('authorization', ''))
+        _authorize(mode, request)
         payload = await interventions.request_json(request)
         result = await asyncio.to_thread(repairs.create, BOARD, payload, mode)
         return JSONResponse(result)
@@ -437,7 +518,7 @@ async def _guarded(request: Request, work):
             raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
         interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
         interventions.validate_content_type(request.headers.get('content-type', ''))
-        interventions.authorize(mode, request.headers.get('authorization', ''))
+        _authorize(mode, request)
         payload = await interventions.request_json(request)
         result = await asyncio.to_thread(work, BOARD, payload, mode)
         return mode, result, None
@@ -489,7 +570,7 @@ async def api_intervention_answer(request: Request):
             raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
         interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
         interventions.validate_content_type(request.headers.get('content-type', ''))
-        interventions.authorize(mode, request.headers.get('authorization', ''))
+        _authorize(mode, request)
         payload = await interventions.request_json(request)
         result = await asyncio.to_thread(interventions.write_answer, BOARD, payload, mode)
         card_body = result.pop('card_body')
