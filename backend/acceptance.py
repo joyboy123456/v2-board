@@ -22,7 +22,8 @@ from pathlib import Path
 IMG_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 VID_EXT = {'.mp4', '.webm'}
 MEDIA_EXT = IMG_EXT | VID_EXT
-VERDICT = [('未通过', 'fail'), ('不通过', 'fail'), ('失败', 'fail'), ('部分', 'partial'), ('未完成', 'pending'),
+VERDICT = [('未通过', 'fail'), ('不通过', 'fail'), ('未能通过', 'fail'), ('无法通过', 'fail'), ('没有通过', 'fail'), ('没通过', 'fail'),
+           ('失败', 'fail'), ('部分', 'partial'), ('未完成', 'pending'),
            ('待复测', 'pending'), ('通过', 'pass')]
 IMG = re.compile(r'!\[([^\]]*)\]\(([^)\s]+)\)')
 
@@ -58,15 +59,37 @@ def split_cards(v: str):
     return [x for x in re.split(r'[、,，\s]+', v) if x]
 
 
+def split_items(body: str):
+    """按二级标题分段；围栏代码块里的 `##` 不算标题。返回 [引言, 条目, ...]，条目不含开头的 `## `。"""
+    parts, current, fence = [], [], ''
+    for line in body.splitlines():
+        mark = re.match(r'^\s*(`{3,}|~{3,})', line)
+        if mark:
+            if not fence:
+                fence = mark.group(1)[0]
+            elif mark.group(1)[0] == fence:
+                fence = ''
+        heading = None if fence else re.match(r'^##\s+(.*)$', line)
+        if heading:
+            parts.append('\n'.join(current))
+            current = [heading.group(1)]
+        else:
+            current.append(line)
+    parts.append('\n'.join(current))
+    return parts
+
+
 def parse(board: Path, path: Path):
     raw = path.read_bytes()
     meta, body = front(raw.decode('utf-8', errors='replace'))
-    parts = re.split(r'^##\s+', body, flags=re.M)
+    parts = split_items(body)
     intro, items = parts[0].strip(), []
     for chunk in parts[1:]:
         title, _, rest = chunk.partition('\n')
         cards, verdict, lines = [], '', []
         for line in rest.splitlines():
+            if not lines and not line.strip():
+                continue  # 标题和「卡：/结论：」之间允许空行
             m = re.match(r'^\s*(卡|结论)[:：]\s*(.+)$', line)
             if m and not lines:
                 if m.group(1) == '卡':
@@ -95,9 +118,11 @@ def parse(board: Path, path: Path):
 def collect(board: Path):
     d = board / 'reports'
     out, errors = [], []
-    if not d.is_dir():
+    if d.is_symlink() or not d.is_dir():
         return out, errors
     for p in sorted(d.glob('*.md')):
+        if p.is_symlink() or not p.is_file():
+            continue  # 不跟随符号链接，免得把看板外的文件内容带进响应
         try:
             out.append(parse(board, p))
         except Exception as e:  # 一份坏报告不拖垮看板
@@ -106,9 +131,21 @@ def collect(board: Path):
     return out, errors
 
 
+def evidence(board: Path):
+    """验收报告里引用到的本地截图、录屏（解析后的绝对路径）。"""
+    root, found = board.resolve(), set()
+    for report in collect(board)[0]:
+        for item in report['items']:
+            for shot in item['shots']:
+                if shot['src'].startswith('/api/file/'):
+                    found.add((root / shot['src'][len('/api/file/'):]).resolve())
+    return found
+
+
 def safe_file(board: Path, rel: str):
+    """只放行看板目录内、被某份验收报告引用的图片或视频。"""
     target = (board / rel).resolve()
     root = board.resolve()
-    if root in target.parents and target.suffix.lower() in MEDIA_EXT and target.is_file():
+    if root in target.parents and target.suffix.lower() in MEDIA_EXT and target.is_file() and target in evidence(board):
         return target
     return None
