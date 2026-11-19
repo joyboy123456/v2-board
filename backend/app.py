@@ -16,9 +16,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+import acceptance
 from fastapi.staticfiles import StaticFiles
 
 import board_parse as bp
+import interventions
 import runs as rr
 from signals import event, load_json, rows, safe_id
 
@@ -118,6 +120,7 @@ def card_json(c):
         body=c['body'], progress='' if c['legacy'] else c['progress'], legacy=c['legacy'],
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
+        answerHistory=interventions.answer_history(c['body']), cardRevision=c['card_revision'],
     )
 
 
@@ -249,7 +252,10 @@ def snapshot():
     items = [card_json(c) for c in cards]
     order = {s: i for i, s in enumerate(SPRINT_ORDER)}
     sprints = sorted({c['sprint'] for c in items} | set(SPRINT_ORDER), key=lambda s: (order.get(s, 99), s))
-    board = dict(summary=rr.card_summary(items, rr.events(BOARD)), timeline=project_timeline(items), cards=items, errors=errors, links=cross_links(items),
+    reports, rerr = acceptance.collect(BOARD)
+    errors = list(errors) + rerr
+    board = dict(summary=rr.card_summary(items, rr.events(BOARD)), timeline=project_timeline(items), cards=items, errors=errors, links=cross_links(items), reports=reports,
+                 intervention=interventions.capabilities(BOARD),
                  sprints=[dict(id=s, name=SPRINT_NAMES.get(s, s), desc=SPRINT_DESC.get(s, ''), count=sum(c['sprint'] == s for c in items)) for s in sprints])
     version = hashlib.sha1(json.dumps(board, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
     board['version'] = version
@@ -380,6 +386,54 @@ def now_cst():
 @app.get('/api/board')
 async def api_board():
     return JSONResponse(dict(hub.board, now=now_cst(), sys=sysinfo()))
+
+
+@app.post('/api/interventions/answer')
+async def api_intervention_answer(request: Request):
+    try:
+        capability = interventions.capabilities(BOARD)
+        mode = capability['mode']
+        if mode == 'readonly':
+            raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        interventions.authorize(mode, request.headers.get('authorization', ''))
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(interventions.write_answer, BOARD, payload, mode)
+        card_body = result.pop('card_body')
+        if hub.board is not None:
+            board = dict(hub.board)
+            cards = []
+            for card in board.get('cards', []):
+                if card.get('key') == result['card_key']:
+                    card = dict(card)
+                    card.update(
+                        dispatch=result['dispatch'],
+                        questions=open_questions(card_body) if result['dispatch'] == 'asking' else [],
+                        answerHistory=interventions.answer_history(card_body),
+                        cardRevision=result['revision'],
+                        body=card_body,
+                    )
+                cards.append(card)
+            board['cards'] = cards
+            version_input = {key: value for key, value in board.items() if key not in ('version', 'dispatch')}
+            board['version'] = hashlib.sha1(json.dumps(version_input, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            hub.board = board
+        hub.tick += 1
+        async with hub.cond:
+            hub.cond.notify_all()
+        return JSONResponse(dict(ok=True, mode=mode, **result))
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+@app.get('/api/file/{rel:path}')
+async def api_file(rel: str):
+    target = acceptance.safe_file(BOARD, rel)
+    if not target:
+        raise HTTPException(404)
+    return FileResponse(target, headers={'Cache-Control': 'public, max-age=86400'})
 
 
 @app.get('/api/agents')

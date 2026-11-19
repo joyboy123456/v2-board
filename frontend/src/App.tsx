@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from 'react';
 import {
   Activity, Cpu, MemoryStick, HardDrive, GitBranch, GitCommitHorizontal, GitMerge, ChevronRight,
-  AlertTriangle, Gavel, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2,
+  AlertTriangle, Gavel, ClipboardCheck, Bot, X, MessageCircleQuestion, CircleCheckBig, Inbox, Gauge, ListOrdered, FileText, MessageSquareText, Clock, Layers, Archive, Filter, Radio, WifiOff, Link2,
 } from 'lucide-react';
 import type { Board, Card, St, Decision } from './types';
 import TaskMap from './Map';
 import Agents from './Agents';
+import Reports, { CardAcceptance, reportsFor } from './Reports';
 import ProjectProgress, { MergeProgress } from './Progress';
 import { LABEL, ORDER, COUNT_ORDER, ago, short, full, freshness, shortTitle, md, inline, flowColumns, STAGES, stageIndex, RUN_STATE, runReason } from './lib';
 
@@ -15,16 +16,29 @@ function useBoard() {
   const [board, setBoard] = useState<Board | null>(null);
   const [conn, setConn] = useState<Conn>('connecting');
   const [error, setError] = useState('');
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch('/api/board', { cache: 'no-store' });
+      if (!response.ok) throw new Error('board request failed');
+      const next = await response.json() as Board;
+      setBoard(next);
+      setError('');
+      return next;
+    } catch {
+      setError('无法读取看板数据');
+      return undefined;
+    }
+  }, []);
   useEffect(() => {
-    fetch('/api/board').then(r => r.json()).then(setBoard).catch(() => setError('无法读取看板数据'));
+    void refresh();
     const es = new EventSource('/api/stream');
     es.onopen = () => setConn('live');
     es.onerror = () => setConn('retry');
     es.addEventListener('board', e => { setBoard(JSON.parse((e as MessageEvent).data)); setConn('live'); setError(''); });
     es.addEventListener('sys', e => { const d = JSON.parse((e as MessageEvent).data); setBoard(b => b ? { ...b, ...d } : b); setConn('live'); });
     return () => es.close();
-  }, []);
-  return { board, conn, error };
+  }, [refresh]);
+  return { board, conn, error, refresh };
 }
 
 /* ---------- URL 状态，便于分享与截图 ---------- */
@@ -63,7 +77,7 @@ function TopBar({ b, conn, view, setView }: { b: Board; conn: Conn; view: string
         <div className="logo"><Layers size={18} strokeWidth={2} /></div>
         <div>
           <h1>V2 开发看板</h1>
-          <p>电商 AI 生图 · 多 agent 并行开发 · 只读</p>
+          <p>电商 AI 生图 · 多 Agent 并行开发 · 回答按模式开放</p>
         </div>
       </div>
       <div className={`live ${conn}`} role="status">
@@ -72,7 +86,7 @@ function TopBar({ b, conn, view, setView }: { b: Board; conn: Conn; view: string
         <time>北京时间 {b.now.slice(0, 16)}</time>
       </div>
       <nav className="page-tabs" aria-label="看板视图">
-        {([['agents', '人与产出', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />]] as const).map(([k, l, icon]) =>
+        {([['agents', '人与产出', <Bot size={15} key="a" />], ['tasks', '任务地图', <Layers size={15} key="t" />], ['progress', '项目进程', <Clock size={15} key="p" />], ['reports', '验收报告', <ClipboardCheck size={15} key="r" />]] as const).map(([k, l, icon]) =>
           <button key={k} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{icon}{l}</button>)}
       </nav>
     </header>
@@ -264,13 +278,107 @@ function SprintPanel({ b, tab, setTab, filter, setFilter, open, now }: {
 }
 
 /* ---------- 详情抽屉 ---------- */
-function Drawer({ c, now, close, open }: { c: Card; now: string; close: () => void; open: (k: string) => void }) {
-  const [tab, setTab] = useState<'rep' | 'dec' | 'git' | 'card'>('rep');
-  useEffect(() => { setTab('rep'); }, [c.key]);
+function InterventionPanel({ b, c, refresh }: { b: Board; c: Card; refresh: () => Promise<Board | undefined> }) {
+  const mode = b.intervention?.mode || 'readonly';
+  const mounted = useRef(true);
+  const [token, setToken] = useState('');
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [pending, setPending] = useState('');
+  const [error, setError] = useState<{ status: number; code: string; detail: string } | null>(null);
+  const [success, setSuccess] = useState('');
+  const questions = c.questions || [];
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const setAnswer = (id: string, value: string) => {
+    setAnswers(current => ({ ...current, [id]: value }));
+    setError(null);
+    setSuccess('');
+  };
+  const submit = async (questionId: string) => {
+    const answer = answers[questionId] || '';
+    if (!answer.trim() || pending || mode === 'readonly' || (mode === 'enabled' && !token.trim())) return;
+    const confirmation = mode === 'demo'
+      ? '确认记录这条演示回答？只会更新合成卡片，不会连接、启动或恢复真实 Agent。'
+      : '确认提交这条回答？答案会写入卡片；dispatcher 之后检查时可能恢复原 worker 会话。看板不会调用 Hark API，也不会停止 worker。';
+    if (!window.confirm(confirmation)) return;
+    setPending(questionId);
+    setError(null);
+    setSuccess('');
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (mode === 'enabled') headers.Authorization = `Bearer ${token}`;
+      const response = await fetch('/api/interventions/answer', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ card_key: c.key, question_id: questionId, answer, expected_revision: c.cardRevision }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; detail?: string; message?: string };
+      if (!response.ok) {
+        if (mounted.current) setError({ status: response.status, code: payload.error || '', detail: payload.detail || '' });
+        return;
+      }
+      if (mounted.current) {
+        setAnswers(current => { const next = { ...current }; delete next[questionId]; return next; });
+        setSuccess(payload.message || '答案已记录。');
+      }
+      await refresh();
+    } catch {
+      if (mounted.current) setError({ status: 0, code: 'network', detail: '提交未确认成功。保留了输入；刷新看板核对回答记录后再决定是否重试。' });
+    } finally {
+      if (mounted.current) setPending('');
+    }
+  };
+  const errorText = error?.status === 401
+    ? '令牌缺失或无效。检查写入令牌后可重试；如果状态不确定，先刷新核对卡片。'
+    : error?.status === 409
+      ? `${error.detail || '卡片或问题状态已变化。'}请刷新看板核对回答记录后再操作。`
+      : error?.status === 403
+        ? '来源检查拒绝了此次请求。请从看板同源页面重试。'
+        : error?.status === 503
+          ? '此实例未启用写入，当前操作保持只读。'
+          : error?.detail || '提交失败；输入仍保留。刷新看板后再重试。';
+  return (
+    <section className="intervention-panel" aria-label="回答 Agent 问题">
+      <p className="intervention-model">个人 Agent 与 Hark 负责路由，服务器 Agent 负责执行；你在这里直接回答卡片问题。看板不会调用真实 Hark API，也不提供 worker 停止控制。</p>
+      {mode === 'readonly' && <p className="intervention-readonly">只读模式：回答操作已禁用。需要显式启用写入，或使用带演示标记的隔离数据。</p>}
+      {mode === 'demo' && <p className="intervention-note">演示回答只修改合成任务卡；这里不会启动 dispatcher 或 worker，因此不代表真实恢复执行。</p>}
+      {mode === 'enabled' && <label className="intervention-token">写入令牌 <small>仅保存在当前页面内存，不写入存储或 URL</small>
+        <input type="password" autoComplete="new-password" value={token} onChange={e => setToken(e.target.value)} />
+      </label>}
+      {questions.map(question => (
+        <article className="intervention-question" key={question.id}>
+          <div className="intervention-qhead"><b>{c.key} · {question.id}</b><span>{question.who || c.executor || c.assignee || 'worker 未标注'}</span></div>
+          <p>{question.text}</p>
+          {question.options.length > 0 && <div className="intervention-options" aria-label="可选回答">
+            {question.options.map(option => <button type="button" key={option} disabled={mode === 'readonly' || Boolean(pending)} onClick={() => setAnswer(question.id, option)}>{option}</button>)}
+          </div>}
+          <label className="intervention-answer">你的回答
+            <textarea value={answers[question.id] || ''} maxLength={4000} rows={3} disabled={mode === 'readonly' || Boolean(pending)} onChange={e => setAnswer(question.id, e.target.value)} placeholder="可选择上方选项，也可自由输入" />
+          </label>
+          <div className="intervention-submit"><small>{(answers[question.id] || '').length}/4000</small><button type="button" disabled={mode === 'readonly' || Boolean(pending) || !c.cardRevision || !(answers[question.id] || '').trim() || (mode === 'enabled' && !token.trim())} onClick={() => void submit(question.id)}>{pending === question.id ? '正在记录…' : '确认并记录回答'}</button></div>
+        </article>
+      ))}
+      {error && <div className="intervention-error" role="alert"><p>{errorText}</p><button type="button" onClick={() => void refresh()}>刷新看板</button></div>}
+      {success && <p className="intervention-success" role="status">{success}</p>}
+      {c.answerHistory.length > 0 && <section className="answer-history" aria-label="已记录回答">
+        <h4>已记录回答</h4>
+        {c.answerHistory.map((record, index) => <article key={`${record.id}-${index}`}><header><b>{record.id} · {record.actor}</b><time>{record.time || '未注明时间'}</time></header><p>{record.answer}</p></article>)}
+      </section>}
+      {questions.length === 0 && c.answerHistory.length === 0 && <p className="empty">这张卡没有等待回答的问题。</p>}
+    </section>
+  );
+}
+
+function Drawer({ b, c, now, close, open, refresh }: { b: Board; c: Card; now: string; close: () => void; open: (k: string) => void; refresh: () => Promise<Board | undefined> }) {
+  const accN = reportsFor(b.reports, c).reduce((a, x) => a + x.items.length, 0);
+  const hasIntervention = Boolean(c.questions?.length || c.answerHistory.length);
+  const firstTab = hasIntervention ? 'intervene' : accN && ['rejected', 'review', 'accepted'].includes(c.st) ? 'acc' : 'rep';
+  type DrawerTab = 'acc' | 'rep' | 'dec' | 'git' | 'card' | 'intervene';
+  const [tab, setTab] = useState<DrawerTab>(firstTab);
+  useEffect(() => { setTab(firstTab); }, [c.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { const node = dialog.current!; node.showModal(); return () => node.close(); }, []);
   const reps = [...c.reports].reverse();
-  const tabs: [typeof tab, string, number | null][] = [['rep', '汇报', c.reports.length], ['dec', '待拍板', c.decisions.length], ['git', '提交', c.git.commit_count], ['card', '任务卡', null]];
+  const tabs: [DrawerTab, string, number | null][] = [...(hasIntervention ? [['intervene', '回答', (c.questions?.length || 0) + c.answerHistory.length] as [DrawerTab, string, number]] : []), ...(accN ? [['acc', '验收', accN] as [DrawerTab, string, number]] : []), ['rep', '汇报', c.reports.length], ['dec', '待拍板', c.decisions.length], ['git', '提交', c.git.commit_count], ['card', '任务卡', null]];
   return (
     <dialog ref={dialog} className="card-dialog" aria-label={c.title} onCancel={close} onClick={e => { if (e.target === e.currentTarget) close(); }}>
       <aside className="drawer" onClick={e => e.stopPropagation()}>
@@ -291,6 +399,8 @@ function Drawer({ c, now, close, open }: { c: Card; now: string; close: () => vo
           </div>
         </div>
         <div className="dr-body">
+          {tab === 'intervene' && <InterventionPanel key={c.key} b={b} c={c} refresh={refresh} />}
+          {tab === 'acc' && <CardAcceptance b={b} c={c} open={open} />}
           {tab === 'rep' && (reps.length ? <ol className="tl">{reps.map((r, i) => (
             <li key={i}><div className="tl-h"><time>{r.time ? full(r.time) : '未注明时间'}</time>{r.who && <span className="who">Hark</span>}{r.sha && <code>{r.sha.slice(0, 8)}</code>}</div><Html className="tl-t" html={inline(r.text)} /></li>
           ))}</ol> : <div className="empty"><MessageSquareText size={16} />没有按格式写的汇报。最近摘要：<Html html={inline(c.last)} /></div>)}
@@ -429,13 +539,28 @@ function LiveRail({ b, open }: { b: Board; open: (k: string) => void }) {
 
 /* ---------- 页面 ---------- */
 export default function App() {
-  const { board, conn, error } = useBoard();
+  const { board, conn, error, refresh } = useBoard();
   const [tab, setTab] = useParam('tab', 'h');
   const [view, setView] = useParam('view', 'agents');
   const [filter, setFilterRaw] = useParam('f', '');
   const [openKey, setOpen] = useParam('open', '');
   const [focus, setFocus] = useParam('focus', '');
+  const [report, setReport] = useParam('report', '');
+  const demoDefaultApplied = useRef(false);
   const byKey = useMemo(() => new Map((board?.cards || []).map(c => [c.key, c])), [board]);
+  useEffect(() => {
+    if (board?.intervention.mode !== 'demo' || demoDefaultApplied.current) return;
+    demoDefaultApplied.current = true;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('view')) setView('tasks');
+    if (!params.has('open')) {
+      const asking = board.cards.find(card => card.questions?.length);
+      if (asking) {
+        if (!params.has('tab')) setTab(asking.sprint);
+        setOpen(asking.key);
+      }
+    }
+  }, [board, setOpen, setTab, setView]);
   const setFilter = (v: string) => {
     setFilterRaw(v);
     if (v && board && !board.cards.some(c => c.sprint === tab && c.st === v)) {
@@ -449,6 +574,7 @@ export default function App() {
   return (
     <div className="app">
       <TopBar b={board} conn={conn} view={view} setView={setView} />
+      {board.intervention.mode === 'demo' && <div className="intervention-banner demo-banner demo-global-banner">隔离演示 · 不连接真实 Agent</div>}
       {board.errors.length > 0 && <div className="errors">{board.errors.map(e => <p key={e}><AlertTriangle size={14} />{e}</p>)}</div>}
       <div className="cols">
         <NeedYou b={board} open={setOpen} />
@@ -456,8 +582,8 @@ export default function App() {
       {view === 'agents' ? <Agents board={board} jump={card => {
         const target = board.cards.find(c => c.key === card || c.id === card);
         setView('tasks'); if (target) { setFocus(target.key); setTab(target.sprint); setOpen(target.key); }
-      }} /> : view === "progress" ? <ProjectProgress board={board} open={setOpen} /> : <>
-      <div className="hero">
+      }} /> : view === 'reports' ? <Reports b={board} open={setOpen} sel={report} setSel={setReport} /> : view === "progress" ? <ProjectProgress board={board} open={setOpen} /> : <>
+      <div className={board.cards.some(c => c.latestRun?.state === 'running') ? 'hero' : 'hero hero-idle'}>
         <Overview cards={board.cards} sprints={board.sprints} filter={filter} setFilter={setFilter} />
         <Working cards={board.cards} now={board.now} open={setOpen} />
       </div>
@@ -467,8 +593,8 @@ export default function App() {
         </main>
         <LiveRail b={board} open={setOpen} />
       </div>
-      <footer>只读看板 · 数据来自任务卡与 git · 有变化时自动推送 · 北京时间（UTC+8）</footer>
-      {current && <Drawer c={current} now={board.now} close={close} open={setOpen} />}
+      <footer>Agent 协作看板 · 回答操作按实例模式开放 · 数据来自任务卡与 git · 有变化时自动推送 · 北京时间（UTC+8）</footer>
+      {current && <Drawer b={board} c={current} now={board.now} close={close} open={setOpen} refresh={refresh} />}
     </div>
   );
 }
