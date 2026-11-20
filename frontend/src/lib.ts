@@ -126,3 +126,34 @@ export function stageIndex(st: St): number {
 
 export const RUN_STATE: Record<string, string> = { running: '运行中', lost: '失联', lost_ended: '失联结束', failed: '失败', timeout: '超时', blocked: '受阻', completed: '成功', cancelled: '已取消', queued: '排队中' };
 export function runReason(value: string) { return ({ heartbeat_stale: '超过 3 分钟没有心跳', historical_open: '历史开工记录没有结束汇报', process_gone: '执行进程已退出' } as Record<string, string>)[value] || value; }
+
+/* ---------- 登录 ---------- */
+// 已登录时写操作靠登录 cookie，不用再填写入令牌。只有开了写入又没开登录的实例才要填；演示实例不要令牌，只读实例不接受写入
+export const auth = { session: false };
+export const needsToken = (mode?: string) => mode === 'enabled' && !auth.session;
+export const LOGIN_EVENT = 'v2b-login-required';
+export const loginRequired = () => { window.dispatchEvent(new Event(LOGIN_EVENT)); };
+// 已登录却收到 401：登录过期，或密码在服务器上改过了，回登录页
+export function expired(status: number): boolean {
+  if (status !== 401 || !auth.session) return false;
+  loginRequired();
+  return true;
+}
+let lastCheck = 0;
+// 实时连接断开时看不到状态码，隔几秒问一次是不是登录掉了
+export async function checkSession() {
+  if (!auth.session || Date.now() - lastCheck < 5000) return;
+  lastCheck = Date.now();
+  try {
+    const response = await fetch('/api/session', { cache: 'no-store' });
+    if (!response.ok) return;
+    const state = await response.json() as { login?: boolean; authed?: boolean };
+    if (state.login && !state.authed) loginRequired();
+  } catch { /* 断网：等它自己重连 */ }
+}
+export async function logout() {
+  try {
+    const response = await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (response.ok) loginRequired();
+  } catch { /* 没退成就留在原处 */ }
+}

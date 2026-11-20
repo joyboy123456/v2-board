@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ DEFAULTS = {
     'min_free_mem_gb': 4,
     'poll_seconds': 5,
     'run_timeout_seconds': 21600,
+    'stop_grace_seconds': 10,
     'agent_run': 'agent-run',
     'link': ['node_modules'],
     'worktree_root': '/root/wt',
@@ -39,7 +41,7 @@ DEFAULTS = {
 
 SESSION_PATTERNS = (
     re.compile(r'"type"\s*:\s*"thread\.started".*?"thread_id"\s*:\s*"([^"]+)"'),
-    re.compile(r'"session_id"\s*:\s*"([^"]+)"'),
+    re.compile(r'"session_?[iI]d"\s*:\s*"([^"]+)"'),
 )
 
 PROTOCOL = """
@@ -54,8 +56,7 @@ PROTOCOL = """
 - 完成：提交到本分支（中文提交信息），不推送、不部署、不改其他分支。最后一条消息写清改了什么、测试结果、还有什么没做。
 """
 
-RESUME = """有人回答了你的问题：
-{answers}
+RESUME = """{said}
 
 请在同一任务里继续，协议同前（卡号 {card}，worktree `{worktree}`，分支 `{branch}`）。"""
 
@@ -121,6 +122,139 @@ class Dispatcher:
             pass
         return 1e9
 
+    @staticmethod
+    def tree(pid):
+        """pid and every live descendant, whichever session or process group they moved to."""
+        kids = {}
+        for stat in Path('/proc').glob('[0-9]*/stat'):
+            try:
+                kids.setdefault(int(stat.read_text().rsplit(')', 1)[1].split()[1]), []).append(int(stat.parent.name))
+            except (OSError, ValueError, IndexError):
+                continue
+        out, todo = [], [int(pid)]
+        while todo:
+            out.append(todo.pop())
+            todo.extend(kids.get(out[-1], []))
+        return out
+
+    @staticmethod
+    def ident(pid):
+        """A live process's start time: together with the pid it names one process, so a recycled pid is never mistaken for it."""
+        try:
+            fields = Path(f'/proc/{int(pid)}/stat').read_text().rsplit(')', 1)[1].split()
+        except (OSError, ValueError, IndexError, TypeError):
+            return None
+        return None if fields[0] == 'Z' else fields[19]
+
+    @staticmethod
+    def inside(pid, worktree):
+        """Is this process working in that worktree? (launch starts every turn with the worktree as its cwd)"""
+        if not worktree:
+            return False
+        try:
+            cwd, root = os.path.realpath(f'/proc/{int(pid)}/cwd'), os.path.realpath(worktree)
+        except (OSError, ValueError, TypeError):
+            return False
+        return cwd == root or cwd.startswith(root + os.sep)
+
+    @staticmethod
+    def unmask(path):
+        """Keep a card writable for the board.
+
+        The board (another user) writes cards through the board directory's default ACL. A card created with mode 644
+        gets an ACL mask of r--, which silently turns that grant read-only: answering, messaging and stopping all fail.
+        Raising the group bits of a file that has an ACL raises its mask; files without an ACL are left alone.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)  # 卡片是符号链接就不碰：它指向的可能是看板外面的文件
+        except OSError:
+            return
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o060 != 0o060 and 'system.posix_acl_access' in os.listxattr(fd):
+                os.fchmod(fd, (info.st_mode & 0o7777) | 0o060)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def halt(self, card):
+        """Someone pressed 停止 on the board. TERM first, so agent-run can pass it on and record the run; KILL what is left after the grace period.
+
+        The whole process tree is written down before the first signal: a child the agent detached (setsid) is no longer
+        findable once its parent exits, so sweep() finishes those off from the list after the turn has ended.
+        """
+        rec = self.rec(card)
+        child = self.children.get(card)
+        pid = child.pid if child else rec.get('pid')
+        if not pid:
+            return
+        if not child:  # 重启后接手的记录：先确认这个 pid 还是当初那个进程，不是就不发信号
+            start = rec.get('pid_start')
+            if not start and self.inside(pid, rec.get('worktree')):
+                start = self.ident(pid)  # 升级前启动的那一轮没记启动时间；它还在这张卡的 worktree 里干活，就认它
+                self.save(card, pid_start=start)
+            if not start or self.ident(pid) != start:
+                self.finish(card, None)
+                return
+        sent = rec.get('stop_sent')
+        if sent and time.time() - sent < float(self.cfg['stop_grace_seconds']):
+            return
+        known = {int(p): start for p, start in rec.get('stop_pids') or []}
+        for p in self.tree(pid):
+            known.setdefault(p, self.ident(p))
+        tracked = [[p, start] for p, start in known.items() if start]
+        sig = signal.SIGKILL if sent else signal.SIGTERM
+        self.save(card, stop_sent=sent or time.time(), stop_pids=tracked)
+        try:  # launched with start_new_session, so the pid leads its own process group
+            if os.getpgid(int(pid)) == int(pid):
+                os.killpg(int(pid), sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        for p, start in tracked if sent else [[int(pid), known.get(int(pid))]]:
+            self.signal(p, start, sig)
+        if not sent:
+            self.event('stopping', card, summary='有人在看板上点了停止，正在结束这一轮')
+
+    def signal(self, pid, start, sig):
+        if start and self.ident(pid) == start:
+            try:
+                os.kill(int(pid), sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def sweep(self, busy):
+        """After a stopped turn has ended: KILL whatever it left behind once the grace period is over. Returns the cards still waiting on that."""
+        waiting = set()
+        for path in self.state.glob('*.json'):
+            card = path.stem
+            rec = self.rec(card)
+            if card in busy or not rec.get('stop_pids'):
+                continue
+            left = [[p, start] for p, start in rec['stop_pids'] if self.ident(p) == start]
+            if not left:
+                self.save(card, stop_pids=None, stop_sent=None)
+                continue
+            waiting.add(card)
+            if time.time() - (rec.get('stop_sent') or 0) >= float(self.cfg['stop_grace_seconds']):
+                for p, start in left:
+                    self.signal(p, start, signal.SIGKILL)
+        return waiting
+
+    def shelve(self, path):
+        """A stop request for a card that is not running: one still waiting for a slot is held, anything else just loses the request."""
+        held = False
+        with cards.edit(path) as box:
+            meta, _ = cards.parse(box[0])
+            if not meta.get('stop'):
+                return
+            text = cards.drop_keys(box[0], 'stop')
+            if meta.get('dispatch') in ('queued', 'answered'):
+                text, held = cards.set_keys(text, dispatch='held', stopped=cards.stamp()), True
+            box[0] = text
+        if held:
+            self.event('stopped', path.stem, summary='还没开始这一轮就被人在看板上停止了')
+
     def running(self):
         return [c for c in self.children] + [
             p.stem for p in self.state.glob('*.json')
@@ -151,7 +285,7 @@ class Dispatcher:
 
     @staticmethod
     def task_text(body):
-        for head in (cards.Q_HEAD, cards.A_HEAD):
+        for head in (cards.Q_HEAD, cards.A_HEAD, cards.M_HEAD):
             body = re.sub(rf'^{re.escape(head)}\s*$.*?(?=^## |\Z)', '', body, flags=re.M | re.S)
         return body.strip()
 
@@ -183,15 +317,20 @@ class Dispatcher:
         final = run_dir / f'{attempt}-final.md'
         out = run_dir / f'{attempt}.log'
         ctx = dict(card=card, worktree=wt, branch=branch)
-        if resume:
-            if not rec.get('session') or 'resume' not in spec:
-                prompt = self.task_text(body) + PROTOCOL.format(**ctx) + '\n\n' + self.answers_text(body)
-                key = 'cmd'
-            else:
-                prompt = RESUME.format(answers=self.answers_text(body), **ctx)
-                key = 'resume'
+        answered = cards.answers(body)
+        total = len(cards.messages(body))
+        # 有的 CLI 续聊不用会话号（在同一个 worktree 里「接着上一次」），resume 命令里没有 {session} 就不要求
+        needs_session = any('{session}' in part for part in spec.get('resume', []) if isinstance(part, str))
+        if resume and 'resume' in spec and (rec.get('session') or (not needs_session and rec.get('attempt'))):  # 从没跑过的卡没有可续的会话，按第一轮给完整任务
+            said = self.said_text(body, skip=rec.get('answers_sent') or (), pending=cards.pending_messages(meta, body))
+            prompt = RESUME.format(said=said or self.said_text(body), **ctx)
+            key = 'resume'
         else:
+            # 第一轮，或续不上原会话：从头给任务，带上至今所有回答和留言
             prompt = self.task_text(body) + PROTOCOL.format(**ctx)
+            said = self.said_text(body, pending=cards.messages(body) if resume else cards.pending_messages(meta, body))
+            if said:
+                prompt += '\n\n' + said
             key = 'cmd'
         cmd = self.command(spec, key, prompt=prompt, final=str(final), session=rec.get('session', ''), worktree=wt, card=card)
         timeout = int(meta.get('timeout') or spec.get('timeout') or self.cfg['run_timeout_seconds'])
@@ -205,18 +344,31 @@ class Dispatcher:
         child = subprocess.Popen(cmd, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True)
         sink.close()
         self.children[card] = child
-        self.save(card, pid=child.pid, attempt=attempt, worktree=wt, branch=branch, executor=meta['executor'], log=str(out), final=str(final), started=cards.stamp(), mode=key)
-        cards.update(path, dispatch='running')
+        self.save(card, pid=child.pid, pid_start=self.ident(child.pid), attempt=attempt, worktree=wt, branch=branch, executor=meta['executor'], log=str(out), final=str(final), started=cards.stamp(), mode=key, answers_sent=sorted(answered))
+        # delivered 记的是这一轮提示词里带上的留言数；launch 之后才到的留言留给下一轮
+        with cards.edit(path) as box:  # stopped 是上一次被人停止留下的标记，重新开跑就清掉
+            box[0] = cards.drop_keys(cards.set_keys(box[0], dispatch='running', delivered=total), 'stopped')
         self.event('resumed' if resume else 'started', card, executor=meta['executor'], attempt=attempt, summary=f"{spec.get('agent', meta['executor'])} 第 {attempt} 轮")
 
     @staticmethod
-    def answers_text(body):
+    def answers_text(body, skip=()):
         q, a = cards.questions(body), cards.answers(body)
         lines = []
         for qid, text in q.items():
-            if qid in a:
+            if qid in a and qid not in skip:
                 lines.append(f'- {qid} 问：{text}\n  答：{a[qid]}')
         return '\n'.join(lines)
+
+    @classmethod
+    def said_text(cls, body, skip=(), pending=None):
+        """What people told the agent since its last turn: new answers, then messages from the board chat."""
+        parts = []
+        answered = cls.answers_text(body, skip)
+        if answered:
+            parts.append('有人回答了你的问题：\n' + answered)
+        if pending:
+            parts.append('用户在看板的对话窗口里对你说：\n' + '\n'.join(f'- {cards.message_text(text)}' for mid, text in pending))
+        return '\n\n'.join(parts)
 
     # ---- finishing --------------------------------------------------------------
     def session_from(self, logfile):
@@ -235,26 +387,37 @@ class Dispatcher:
         rec = self.rec(card)
         session = self.session_from(rec.get('log', '')) or rec.get('session', '')
         path = cards.find(self.board, card)
-        meta, body = cards.read(path) if path else ({}, '')
-        state = meta.get('dispatch')
-        board_status = meta.get('status', '')
-        if state == 'asking' or (path and cards.open_questions(body)):
-            new = 'asking'
-        elif state == 'answered':
-            new = 'answered'  # answered while the worker was still running: resume next pass
-        elif rc == 0 or (rc is None and board_status in ('review', 'accepted')):
-            new = 'done'
-        else:
-            new = 'failed'
+        new, halted = 'done' if rc == 0 else 'failed', False
+        if path:
+            # 判断和改写在同一把锁里做，这一刻刚写进来的留言或回答不会被漏掉
+            with cards.edit(path) as box:
+                meta, body = cards.parse(box[0])
+                state = meta.get('dispatch')
+                if state == 'asking' or cards.open_questions(body):
+                    new = 'asking'
+                elif state == 'answered' or cards.pending_messages(meta, body):
+                    new = 'answered'  # answered or messaged while the worker was still running: resume next pass
+                elif rc == 0 or (rc is None and meta.get('status', '') in ('review', 'accepted')):
+                    new = 'done'
+                else:
+                    new = 'failed'
+                text = box[0]
+                if meta.get('stop'):
+                    # 有人点了停止：这一轮不算失败，会话留着；它自己正常跑完的话仍按完成算
+                    text = cards.drop_keys(text, 'stop')
+                    if new in ('failed', 'answered'):
+                        new, halted = 'held', True
+                        text = cards.set_keys(text, stopped=cards.stamp())
+                if state != new:
+                    text = cards.set_keys(text, dispatch=new)
+                box[0] = text
         summary = ''
         try:
             summary = Path(rec.get('final', '')).read_text(errors='replace').strip()[:300]
         except OSError:
             pass
         self.save(card, pid=None, session=session, exit_code=rc, ended=cards.stamp())
-        if path and state != new:
-            cards.update(path, dispatch=new)
-        self.event(new, card, exit_code=rc, summary=summary or f'退出码 {rc}')
+        self.event('stopped' if halted else new, card, exit_code=rc, summary='被人在看板上停止，会话和 worktree 保留' if halted else summary or f'退出码 {rc}')
 
     def reap(self):
         for card, child in list(self.children.items()):
@@ -273,9 +436,19 @@ class Dispatcher:
     def tick(self):
         self.reap()
         busy = set(self.running())
+        busy |= self.sweep(busy)  # 被停止的那一轮还有残留进程没清完：先不让这张卡再开跑
         todo = []
         for path, meta, body in cards.scan(self.board):
             card, state = path.stem, meta.get('dispatch')
+            self.unmask(path)
+            if meta.get('stop'):
+                if card in self.children or self.alive(self.rec(card).get('pid')):
+                    self.halt(card)
+                elif state == 'running':
+                    self.finish(card, None)
+                else:
+                    self.shelve(path)
+                continue
             if card in busy:
                 continue
             if state == 'running':

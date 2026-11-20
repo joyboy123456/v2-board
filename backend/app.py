@@ -16,16 +16,22 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.requests import HTTPConnection
+import acceptance
+import auth
+import chat
+import repairs
 from fastapi.staticfiles import StaticFiles
 
 import board_parse as bp
+import interventions
 import runs as rr
 from signals import event, load_json, rows, safe_id
 
 BOARD = Path(os.environ.get('V2_BOARD_DIR', '/srv/v2-wiring-board'))
 bp.BOARD = BOARD
 DIST = Path(__file__).resolve().parent.parent / 'frontend' / 'dist'
-SPRINT_NAMES = {'wiring': '第 1 批 · 接真实后端', 'parity': '第 2 批 · 对标竞品', 'h': '第 3 批 · 主流程新功能', 'fix': '第 4 批 · 验收退回修复'}
+SPRINT_NAMES = {'wiring': '第 1 批 · 接真实后端', 'parity': '第 2 批 · 对标竞品', 'h': '第 3 批 · 主流程新功能', 'fix': '第 4 批 · 验收退回修复', 'chat': '对话窗口直接交办'}
 SPRINT_DESC = {
     'wiring': '卡号 01–08：把 V2 界面接上真实账号、生成、资产和对话 agent',
     'parity': '卡号 G1–G7：照着 Lovart、即梦、椒图补齐体验，每张卡标明学哪家的哪个功能',
@@ -117,7 +123,10 @@ def card_json(c):
         bench=benchmark(d['title'], c['body'])[0], benchBrands=benchmark(d['title'], c['body'])[1],
         body=c['body'], progress='' if c['legacy'] else c['progress'], legacy=c['legacy'],
         dispatch=str(d.get('dispatch', '') or ''), executor=str(d.get('executor', '') or ''),
+        stopping=bool(d.get('stop')), stopped=bool(d.get('stopped')),
         questions=open_questions(c['body']) if d.get('dispatch') == 'asking' else [],
+        answerHistory=interventions.answer_history(c['body']), chatLog=chat.chat_log(d, c['body']), cardRevision=c['card_revision'],
+        repairSource=str(d.get('repair_source', '') or ''), repairReport=str(d.get('repair_report', '') or ''), repairItem=str(d.get('repair_item', '') or ''),
     )
 
 
@@ -249,7 +258,10 @@ def snapshot():
     items = [card_json(c) for c in cards]
     order = {s: i for i, s in enumerate(SPRINT_ORDER)}
     sprints = sorted({c['sprint'] for c in items} | set(SPRINT_ORDER), key=lambda s: (order.get(s, 99), s))
-    board = dict(summary=rr.card_summary(items, rr.events(BOARD)), timeline=project_timeline(items), cards=items, errors=errors, links=cross_links(items),
+    reports, rerr = acceptance.collect(BOARD)
+    errors = list(errors) + rerr
+    board = dict(summary=rr.card_summary(items, rr.events(BOARD)), timeline=project_timeline(items), cards=items, errors=errors, links=cross_links(items), reports=reports,
+                 intervention=intervention_state(),
                  sprints=[dict(id=s, name=SPRINT_NAMES.get(s, s), desc=SPRINT_DESC.get(s, ''), count=sum(c['sprint'] == s for c in items)) for s in sprints])
     version = hashlib.sha1(json.dumps(board, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
     board['version'] = version
@@ -357,6 +369,32 @@ class Hub:
 
 hub = Hub()
 app = FastAPI(title='V2 开发看板', docs_url=None, redoc_url=None)
+login_throttle = auth.Throttle()
+OPEN_API = ('/api/session', '/api/login', '/api/logout')
+
+
+class LoginGate:
+    """开了登录以后，没登录的请求读不到 /api/ 下的任何数据。页面本身和静态资源照常给，由前端显示登录页。
+
+    /api/interventions/ 不在这里拦：写接口自己校验「已登录或带写入令牌」，报错格式保持原样。
+    纯 ASGI 中间件，不包装响应，SSE 长连接不受影响。
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get('path', '') if scope['type'] == 'http' else ''
+        if path.startswith('/api/') and path not in OPEN_API and not path.startswith('/api/interventions/'):
+            conn = HTTPConnection(scope)
+            if not auth.allowed(conn.cookies.get(auth.COOKIE, ''), conn.headers.get('authorization', '')):
+                denied = JSONResponse({'error': 'login_required', 'detail': '请先登录看板。'}, status_code=401, headers={'Cache-Control': 'no-store'})
+                await denied(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(LoginGate)
 
 
 @app.on_event('startup')
@@ -377,9 +415,199 @@ def now_cst():
     return datetime.now(bp.CST).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _https(request: Request) -> bool:
+    if os.environ.get('V2_INTERVENTION_TRUST_PROXY_HEADERS') == '1' and request.headers.get('x-forwarded-proto', '').strip().lower() == 'https':
+        return True
+    return request.url.scheme == 'https'
+
+
+def _authorize(mode: str, request: Request) -> None:
+    """写操作：已登录的浏览器靠 cookie，脚本和没开登录的实例靠写入令牌。跨站请求在这之前已经被来源检查拒掉。"""
+    if mode == 'enabled' and auth.session_ok(request.cookies.get(auth.COOKIE, '')):
+        return
+    interventions.authorize(mode, request.headers.get('authorization', ''))
+
+
+@app.get('/api/session')
+async def api_session(request: Request):
+    need = auth.required()
+    authed = not need or auth.session_ok(request.cookies.get(auth.COOKIE, ''))
+    return JSONResponse({'login': need, 'authed': authed}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/login')
+async def api_login(request: Request):
+    try:
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        payload = await interventions.request_json(request)
+    except interventions.InterventionError as error:
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status)
+    if not auth.required():
+        return JSONResponse({'ok': True, 'login': False})
+    client = request.client.host if request.client else ''
+    if login_throttle.blocked(client):
+        return JSONResponse({'error': 'too_many_attempts', 'detail': '密码输错的次数太多，请 5 分钟后再试。'}, status_code=429, headers={'Retry-After': str(auth.WINDOW)})
+    if set(payload) != {'password'} or not auth.password_ok(payload['password']):
+        login_throttle.fail(client)
+        await asyncio.sleep(login_throttle.delay())
+        return JSONResponse({'error': 'bad_password', 'detail': '密码不对。'}, status_code=401)
+    response = JSONResponse({'ok': True, 'login': True}, headers={'Cache-Control': 'no-store'})
+    response.set_cookie(auth.COOKIE, auth.issue(), max_age=auth.TTL, path='/', httponly=True, samesite='lax', secure=_https(request))
+    return response
+
+
+@app.post('/api/logout')
+async def api_logout(request: Request):
+    try:
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+    except interventions.InterventionError as error:
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status)
+    response = JSONResponse({'ok': True})
+    response.delete_cookie(auth.COOKIE, path='/')
+    return response
+
+
 @app.get('/api/board')
 async def api_board():
     return JSONResponse(dict(hub.board, now=now_cst(), sys=sysinfo()))
+
+
+def intervention_state():
+    state = dict(interventions.capabilities(BOARD))
+    state['repair'] = repairs.enabled(state['mode'])
+    state['executors'] = repairs.executors(BOARD, state['mode']) if state['repair'] else []
+    state['repairBase'] = repairs.default_base(state['mode'])
+    agents = chat.executor_agents(BOARD, state['mode'])
+    for item in state['executors']:
+        item.update(agents.get(item['id'], {}))
+    return state
+
+
+@app.post('/api/interventions/repair')
+async def api_intervention_repair(request: Request):
+    try:
+        mode = interventions.capabilities(BOARD)['mode']
+        if mode == 'readonly' or not repairs.enabled(mode):
+            raise interventions.InterventionError(503, 'repair_disabled', '看板未开启指派修复。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        _authorize(mode, request)
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(repairs.create, BOARD, payload, mode)
+        return JSONResponse(result)
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+def _publish_card(key, **changes):
+    if hub.board is None:
+        return
+    board = dict(hub.board)
+    board['cards'] = [dict(card, **changes) if card.get('key') == key else card for card in board.get('cards', [])]
+    version_input = {k: v for k, v in board.items() if k not in ('version', 'dispatch')}
+    board['version'] = hashlib.sha1(json.dumps(version_input, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+    hub.board = board
+
+
+async def _guarded(request: Request, work):
+    try:
+        mode = interventions.capabilities(BOARD)['mode']
+        if mode == 'readonly':
+            raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        _authorize(mode, request)
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(work, BOARD, payload, mode)
+        return mode, result, None
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return None, None, JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+@app.post('/api/interventions/message')
+async def api_intervention_message(request: Request):
+    mode, result, failure = await _guarded(request, chat.write_message)
+    if failure:
+        return failure
+    body, meta = result.pop('card_body'), result.pop('card_meta')
+    _publish_card(result['card_key'], dispatch=result['dispatch'], chatLog=chat.chat_log(meta, body), cardRevision=result['revision'], body=body)
+    hub.tick += 1
+    async with hub.cond:
+        hub.cond.notify_all()
+    return JSONResponse(dict(ok=True, mode=mode, **result))
+
+
+@app.post('/api/interventions/stop')
+async def api_intervention_stop(request: Request):
+    mode, result, failure = await _guarded(request, chat.request_stop)
+    if failure:
+        return failure
+    result.pop('card_body'), result.pop('card_meta')
+    _publish_card(result['card_key'], dispatch=result['dispatch'], stopping=result['stopping'], cardRevision=result['revision'])
+    hub.tick += 1
+    async with hub.cond:
+        hub.cond.notify_all()
+    return JSONResponse(dict(ok=True, mode=mode, **result))
+
+
+@app.post('/api/interventions/session')
+async def api_intervention_session(request: Request):
+    mode, result, failure = await _guarded(request, chat.create_session)
+    if failure:
+        return failure
+    return JSONResponse(dict(ok=True, mode=mode, **result))
+
+
+@app.post('/api/interventions/answer')
+async def api_intervention_answer(request: Request):
+    try:
+        capability = interventions.capabilities(BOARD)
+        mode = capability['mode']
+        if mode == 'readonly':
+            raise interventions.InterventionError(503, 'writes_disabled', '看板写入未启用。')
+        interventions.validate_origin(request.headers, request.scope.get('scheme', 'http'))
+        interventions.validate_content_type(request.headers.get('content-type', ''))
+        _authorize(mode, request)
+        payload = await interventions.request_json(request)
+        result = await asyncio.to_thread(interventions.write_answer, BOARD, payload, mode)
+        card_body, card_meta = result.pop('card_body'), result.pop('card_meta')
+        if hub.board is not None:
+            board = dict(hub.board)
+            cards = []
+            for card in board.get('cards', []):
+                if card.get('key') == result['card_key']:
+                    card = dict(card)
+                    card.update(
+                        dispatch=result['dispatch'],
+                        questions=open_questions(card_body) if result['dispatch'] == 'asking' else [],
+                        answerHistory=interventions.answer_history(card_body),
+                        chatLog=chat.chat_log(card_meta, card_body),
+                        cardRevision=result['revision'],
+                        body=card_body,
+                    )
+                cards.append(card)
+            board['cards'] = cards
+            version_input = {key: value for key, value in board.items() if key not in ('version', 'dispatch')}
+            board['version'] = hashlib.sha1(json.dumps(version_input, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            hub.board = board
+        hub.tick += 1
+        async with hub.cond:
+            hub.cond.notify_all()
+        return JSONResponse(dict(ok=True, mode=mode, **result))
+    except interventions.InterventionError as error:
+        headers = {'WWW-Authenticate': 'Bearer'} if error.status == 401 else None
+        return JSONResponse({'error': error.code, 'detail': error.detail}, status_code=error.status, headers=headers)
+
+
+@app.get('/api/file/{rel:path}')
+async def api_file(rel: str):
+    target = acceptance.safe_file(BOARD, rel)
+    if not target:
+        raise HTTPException(404)
+    return FileResponse(target, headers={'Cache-Control': 'no-cache'})
 
 
 @app.get('/api/agents')
@@ -429,6 +657,8 @@ async def api_events(since: str = ''):
 
 @app.get('/api/stream')
 async def api_stream(request: Request):
+    cookie, authorization = request.cookies.get(auth.COOKIE, ''), request.headers.get('authorization', '')
+
     async def gen():
         seen = -1
         serial = hub.serial
@@ -437,7 +667,8 @@ async def api_stream(request: Request):
         yield 'event: runs\ndata: ' + json.dumps(hub.signal_data, ensure_ascii=False) + '\n\n'
         recent = await asyncio.to_thread(rr.events, BOARD)
         yield 'event: events\ndata: ' + json.dumps(recent[-200:], ensure_ascii=False) + '\n\n'
-        while not await request.is_disconnected():
+        # 登录门只在连上的那一刻检查；连着的时候 cookie 到期就在这里断开，浏览器重连时会拿到 401 回登录页
+        while auth.allowed(cookie, authorization) and not await request.is_disconnected():
             if seen != hub.tick:
                 seen = hub.tick
                 yield 'event: board\ndata: ' + json.dumps(dict(hub.board, now=now_cst(), sys=sysinfo()), ensure_ascii=False) + '\n\n'

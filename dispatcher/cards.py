@@ -10,6 +10,10 @@ board-report over `status`:
   failed   -> the executor failed or timed out
   held     -> a person paused it; the dispatcher ignores it
   closed   -> accepted or dropped by a person; the dispatcher ignores it
+
+Two more keys carry the board's 停止 button: the board writes 'stop' (a request),
+the dispatcher ends the turn, removes it and writes 'stopped' next to 'held'.
+A message to a session held that way reopens it; one held by hand stays held.
 """
 from __future__ import annotations
 
@@ -50,6 +54,14 @@ def set_keys(text, **values):
         else:
             head = (head + '\n' if head else '') + line
     return f'---\n{head}\n---\n' + (text[m.end():] if m else text)
+
+
+def drop_keys(text, *keys):
+    m = FM.match(text)
+    if not m:
+        return text
+    head = '\n'.join(line for line in m.group(1).split('\n') if line.split(':', 1)[0] not in keys)
+    return f'---\n{head}\n---\n' + text[m.end():]
 
 
 @contextmanager
@@ -123,6 +135,45 @@ def _append(text, head, line):
     if re.search(rf'^{re.escape(head)}\s*$', text, re.M):
         return re.sub(rf'(^{re.escape(head)}\s*$\n(?:(?!^## ).*\n?)*)', lambda m: m.group(1).rstrip('\n') + '\n' + line + '\n', text, count=1, flags=re.M)
     return text.rstrip('\n') + f'\n\n{head}\n{line}\n'
+
+
+# 留言：人在看板对话窗口里对 Agent 说的话。front matter 的 delivered 记已经送进会话的条数。
+M_HEAD = '## 留言'
+M_LINE = re.compile(r'^- \[(M\d+)\] (.*)$', re.M)
+
+
+def messages(body):
+    return M_LINE.findall(_section(body, M_HEAD))
+
+
+def delivered(meta):
+    try:
+        return max(0, int(meta.get('delivered') or 0))
+    except ValueError:
+        return 0
+
+
+def message_text(raw):
+    """'2026-11-19 22:24:55 CST | user: 你好' -> '你好'（送给 Agent 的只要正文）。"""
+    rest = raw.split(' | ', 1)[1] if ' | ' in raw else raw
+    return rest.split(': ', 1)[1] if ': ' in rest else rest
+
+
+def pending_messages(meta, body):
+    return messages(body)[delivered(meta):]
+
+
+def add_message(path, text, actor='user'):
+    """Record a message for the agent. A finished session is reopened; a live one picks it up after its turn."""
+    with edit(path) as box:
+        meta, body = parse(box[0])
+        mid = f'M{len(messages(body)) + 1}'
+        box[0] = _append(box[0], M_HEAD, f'- [{mid}] {stamp()} | {actor}: {" ".join(str(text).split())}')
+        if meta.get('dispatch') in ('done', 'failed'):
+            box[0] = set_keys(box[0], dispatch='answered')
+        elif meta.get('dispatch') == 'held' and meta.get('stopped'):
+            box[0] = drop_keys(set_keys(box[0], dispatch='answered'), 'stopped')  # 标记只管这一次；之后再被手工暂停就不会被留言唤醒
+    return mid
 
 
 def add_question(path, question, options=(), agent=''):

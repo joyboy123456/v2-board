@@ -4,25 +4,26 @@ import type { Board } from './types';
 import { MergeProgress } from './Progress';
 import type { MergeState } from './types';
 import { contiguousSeq, mergeBySeq } from './run-stream';
+import { checkSession, expired } from './lib';
 
-type Run = { merge?: MergeState; id: string; agent_id: string; card: string; agent: string; model: string; reasoning?: string; state: string; branch: string; started_at: string; ended_at?: string; duration_seconds?: number; commits?: number; changed_files?: number; final_summary?: string; current_activity?: string; last_message?: string; tool_calls?: number; recent_files?: string[]; backfilled?: boolean; reason?: string; exit_code?: number; progress?: { summary: string; step?: number; total?: number }; latest_commit?: { subject: string }; log_tail?: string };
-type Agent = { id: string; name: string; model: string; reasoning: string; availability: string; workload: string; current_run: Run | null; latest_run: Run | null; recent_runs: Run[]; total_runs: number; success_rate: number | null; totals: { commits: number; changed_files: number; completed_cards: number }; latest_commit?: { subject: string } };
-type Msg = { run_id: string; seq: number; ts: string; type: string; tool?: string; summary: string; content: string };
+export type Run = { merge?: MergeState; id: string; agent_id: string; card: string; agent: string; model: string; reasoning?: string; state: string; branch: string; started_at: string; ended_at?: string; duration_seconds?: number; commits?: number; changed_files?: number; final_summary?: string; current_activity?: string; last_message?: string; tool_calls?: number; recent_files?: string[]; backfilled?: boolean; reason?: string; exit_code?: number; progress?: { summary: string; step?: number; total?: number }; latest_commit?: { subject: string }; log_tail?: string };
+export type Agent = { id: string; name: string; model: string; reasoning: string; availability: string; workload: string; current_run: Run | null; latest_run: Run | null; recent_runs: Run[]; total_runs: number; success_rate: number | null; totals: { commits: number; changed_files: number; completed_cards: number }; latest_commit?: { subject: string } };
+export type Msg = { run_id: string; seq: number; ts: string; type: string; tool?: string; summary: string; content: string };
 type Event = { id: string; seq: number; ts: string; occurred_at?: string; type: string; card?: string; branch?: string; sha?: string; subject?: string; summary?: string; state?: string; agent?: string; run_id?: string; backfilled?: boolean };
 type Data = { agents: Agent[]; summary: { completed_today: number; new_commits: number; review_accepted: number; running_agents: number }; runs?: Run[] };
-const STATE: Record<string, string> = { running: '运行中', queued: '排队中', completed: '成功', failed: '失败', cancelled: '已取消', timeout: '超时', lost: '失联', lost_ended: '失联结束', idle: '空闲' };
-const TYPE: Record<string, string> = { text: '输出', thinking: '思考', tool_use: '调用工具', tool_result: '工具结果', file_change: '文件改动', error: '错误', progress: '进度' };
+export const STATE: Record<string, string> = { running: '运行中', queued: '排队中', completed: '成功', failed: '失败', cancelled: '已取消', timeout: '超时', lost: '失联', lost_ended: '失联结束', idle: '空闲' };
+export const TYPE: Record<string, string> = { text: '输出', thinking: '思考', tool_use: '调用工具', tool_result: '工具结果', file_change: '文件改动', error: '错误', progress: '进度' };
 const ACT: Record<string, string> = { 'git:commit': '提交', 'git:push': '远端推送', 'run:status': '执行', 'card:status': '卡状态', 'card:report': '汇报', 'run:progress': '进度' };
 const CARD_STATE: Record<string, string> = { review: '待验收', accepted: '已验收', in_progress: '进行中', blocked: '受阻', rejected: '退回', assigned: '已指派' };
-const COLORS = ['#8d9bff', '#69d4c5', '#d5a5ed', '#efb574', '#84c89b', '#e78d9e', '#8ebff2', '#d7cc85'];
-function cst(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '未记录'; }
+export const COLORS = ['#8d9bff', '#69d4c5', '#d5a5ed', '#efb574', '#84c89b', '#e78d9e', '#8ebff2', '#d7cc85'];
+export function cst(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '未记录'; }
 function elapsed(run: Run, clock: number) {
   const seconds = Math.max(0, Math.floor(run.duration_seconds ?? ((run.ended_at ? Date.parse(run.ended_at) : clock) - Date.parse(run.started_at)) / 1000));
   return seconds < 60 ? `${seconds} 秒` : seconds < 3600 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds / 60) % 60} 分`;
 }
-async function get<T,>(url: string, signal?: AbortSignal): Promise<T> { const response = await fetch(url, { signal }); if (!response.ok) throw new Error(`读取失败 (${response.status})`); return response.json(); }
+export async function get<T,>(url: string, signal?: AbortSignal): Promise<T> { const response = await fetch(url, { signal }); expired(response.status); if (!response.ok) throw new Error(`读取失败 (${response.status})`); return response.json(); }
 
-function useAgentFeed() {
+export function useAgentFeed() {
   const [data, setData] = useState<Data | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
@@ -35,6 +36,7 @@ function useAgentFeed() {
   useEffect(() => {
     let mounted = true;
     const es = new EventSource('/api/stream');
+    es.addEventListener('error', () => { void checkSession(); });
     const refresh = () => {
       setConnection('live'); setGeneration(n => n + 1);
       const requestedRevision = revision.current;

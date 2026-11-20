@@ -1,6 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App';
+import Gate from './Login';
+import { applyTheme, storedTheme } from './theme';
+import './theme.css';
 import './styles.css';
 
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);
+applyTheme(storedTheme());
+
+createRoot(document.getElementById('root')!).render(<StrictMode><Gate /></StrictMode>);

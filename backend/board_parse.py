@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -39,6 +40,8 @@ def scalar(value):
     if value.startswith('['):
         try:
             return json.loads(value)
+        except RecursionError:  # 嵌套太深的列表按格式错误处理，调用方都只接 ValueError
+            raise ValueError('front matter 列表嵌套过深') from None
         except ValueError:
             return [scalar(v) for v in value.strip('[]').split(',') if v.strip()]
     return value.split(' #', 1)[0].strip()
@@ -93,8 +96,37 @@ def read_text(path):
         return ''
 
 
-def metadata(card, sprint):
-    text = read_text(card)
+# 只为防止把异常大的文件整个读进内存；能否写入另由 interventions.MAX_CARD_BYTES 限制
+MAX_READ_BYTES = 16 * 1024 * 1024
+
+
+def read_card_bytes(card):
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_CLOEXEC', 0)
+    fd = os.open(card, flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError('card is not a regular file')
+        if st.st_size > MAX_READ_BYTES:
+            raise ValueError('card exceeds the safe read limit')
+        chunks = []
+        size = 0
+        while True:
+            chunk = os.read(fd, min(65536, MAX_READ_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_READ_BYTES:
+                raise ValueError('card exceeds the safe read limit')
+        return b''.join(chunks)
+    finally:
+        os.close(fd)
+
+
+def metadata(card, sprint, include_revision=False):
+    raw = read_card_bytes(card)
+    text = raw.decode('utf-8')
     try:
         data, body = split_front(text)
     except (ValueError, TypeError):
@@ -117,12 +149,31 @@ def metadata(card, sprint):
     if not isinstance(defaults['depends'], list):
         defaults['depends'] = []
         defaults['missing_fields'].append('depends（无效）')
-    return defaults, body, progress
+    result = defaults, body, progress
+    if include_revision:
+        return (*result, hashlib.sha256(raw).hexdigest())
+    return result
 
 
-def discover(root):
+def _card_probe(card):
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_CLOEXEC', 0)
+    try:
+        fd = os.open(card, flags)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, 6)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def discover(root, include_unreadable=False):
     """Every Markdown document inside a batch is a card; root keeps legacy IDs only."""
-    excluded = {'runs', 'events', 'shots'}
+    excluded = {'runs', 'events', 'shots', 'reports'}
     groups = [('wiring', root)] + [(p.name, p) for p in sorted(root.iterdir()) if p.is_dir() and not p.is_symlink() and not p.name.startswith('.') and p.name not in excluded]
     for sprint, directory in groups:
         for card in sorted(directory.glob('*.md')):
@@ -130,9 +181,15 @@ def discover(root):
                 continue
             if directory == root and not re.fullmatch(r'\d{2}', card.stem):
                 continue
+            head = _card_probe(card)
+            if head is None:
+                # 编号卡打不开时仍交给调用方，让读取错误出现在看板的错误列表里
+                if include_unreadable and re.fullmatch(r'\d{2}', card.stem):
+                    yield sprint, card
+                continue
             # A card is any batch document with front matter (even if id/title/status are
             # missing); prompts, notes and QA findings without front matter are not cards.
-            if re.fullmatch(r'\d{2}', card.stem) or read_text(card).lstrip('\ufeff').startswith('---'):
+            if re.fullmatch(r'\d{2}', card.stem) or (head[3:] if head.startswith(b'\xef\xbb\xbf') else head).startswith(b'---'):
                 yield sprint, card
 
 
@@ -243,9 +300,9 @@ def collect():
     from runs import all_runs
     from card_git import inspect_card
     records = all_runs(BOARD)
-    for sprint, path in discover(BOARD):
+    for sprint, path in discover(BOARD, include_unreadable=True):
         try:
-            data, body, progress = metadata(path, sprint)
+            data, body, progress, card_revision = metadata(path, sprint, include_revision=True)
             progress_path = path.with_name(path.stem + '-progress.md')
             legacy = not progress_path.exists()
             display_progress = progress if not legacy else body
@@ -256,7 +313,7 @@ def collect():
                 data['run_base'] = min(bases, key=lambda r: r.get('started_at', ''))['base_commit']
             git_info = inspect_card(data)
             commits, git_note, baseline = git_info['commits'], git_info['note'], git_info['baseline']
-            cards.append(dict(data=data, sprint=sprint, key=sprint+'/'+path.stem, body=body,
+            cards.append(dict(data=data, sprint=sprint, key=sprint+'/'+path.stem, body=body, card_revision=card_revision,
                               progress=display_progress, legacy=legacy, last=last, stamp=stamp, source=source,
                               commits=commits, git_note=git_note, baseline=baseline, git_info=git_info, latest_run=next((r for r in related if not r.get('backfilled')), related[0] if related else None),
                               decisions=list(dict.fromkeys(decisions(display_progress)+decisions(body)))))

@@ -2,7 +2,7 @@
 
 一个只读的多 Agent 开发进度看板：把一个目录里的 Markdown 任务卡（front matter 写 status/title/agent/depends）和对应 git 分支，画成「谁在干活、进度、待验收、卡住原因、必须拍板的事」一屏可看的界面，并展示卡片之间的依赖与合并路线。
 
-- 前端：Vite + React + TypeScript + lucide-react，暗色界面
+- 前端：Vite + React + TypeScript + lucide-react，亮色（默认）与暗色两套主题，顶栏切换
 - 后端：Python FastAPI，只读 Markdown 与 git，SSE 推送实时更新
 - 附带 `agent-run` / `board-report` 两个脚本，让 Codex、Claude Code 等 Agent 自己把开始、进度、结束汇报到看板
 - `dispatcher/`：常驻调度器 v2-dispatch，排队、并发槽位、提问回流与同会话续跑，见 dispatcher/README.md
@@ -151,7 +151,43 @@ nice -n 19 cp -p /usr/local/bin/board-report.bak-20261117 /usr/local/bin/board-r
 | `GET /api/events?since=` | since 支持事件 seq、id 或 ISO 时间戳 |
 | `GET /api/stream` | 原 `board/sys`，新增 `runs/events` 快照与 `run:message/status/progress`、`git:commit/push`、`card:status/report` |
 
-SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 REST `after_seq` 补齐；前端按 seq 合并去重，不依赖进程重启后会重置的 SSE id。慢消费者溢出重放窗口会收到 `resync`，重新读取快照与消息。日志 JSON 中提取 agent_message 文本；API 和持久结构化消息屏蔽常见 token、密钥、Authorization、密码、私钥、URL userinfo，原始日志只保留在宿主数据目录中。接口没有写操作。
+SSE 连接和重连都会发最新 runs 与最近 200 个 events。消息使用 REST `after_seq` 补齐；前端按 seq 合并去重，不依赖进程重启后会重置的 SSE id。慢消费者溢出重放窗口会收到 `resync`，重新读取快照与消息。日志 JSON 中提取 agent_message 文本；API 和持久结构化消息屏蔽常见 token、密钥、Authorization、密码、私钥、URL userinfo，原始日志只保留在宿主数据目录中。上表的接口都只读；写入只有下一节的两个干预接口，默认关闭。
+
+## 在看板上干预（默认关闭）
+
+看板默认只读。写入有五件事：回答提问、指派修复、给 Agent 留言、开新会话、请求停止。都只写任务卡文件，看板自己不启动、停止或恢复任何 Agent，后续由 dispatcher 按卡片状态处理。
+
+| 接口 | 作用 |
+| --- | --- |
+| `POST /api/interventions/answer` | 回答 `dispatch: asking` 卡片里的问题：追加到 `## 回答`，全部答完才把 `dispatch` 改成 `answered` |
+| `POST /api/interventions/repair` | 把一条未通过、部分通过或未完成的验收项指派给某个执行器：在 `fix/` 下新建一张 `REPAIR-*` 修复卡，原卡和原报告不动 |
+| `POST /api/interventions/message` | 「Agent 对话」页里对 Agent 说话：追加到卡片的 `## 留言`。看板不碰 Agent 进程；dispatcher 在这一轮结束后把留言送达：执行器配了可用的 `resume` 命令就接着同一个会话，没配就用 `cmd` 从头给任务并带上全部留言。`asking` 的卡要先把问题答完才会继续，手工暂停（`held`）的卡只记留言。`enabled` 模式下已完成、失败或被「停止」的会话会被重新排进队列（`answered`）；演示模式只记留言，不改状态 |
+| `POST /api/interventions/stop` | 「Agent 对话」页的「停止」：只在卡片 front matter 里记一个 `stop` 请求。看板碰不到 Agent 进程；dispatcher 下一次巡检时结束这一轮（先 TERM，`stop_grace_seconds` 秒后还在就 KILL），把会话置为 `held` 并标 `stopped`，worktree 和会话号保留。之后留言会接着同一个会话继续 |
+| `GET /api/session`、`POST /api/login`、`POST /api/logout` | 登录。配了密码的实例，没登录时 `/api/` 下的读接口一律回 401 `login_required`，页面显示登录页；输对密码后发一个 30 天有效的 HttpOnly cookie（签名密钥由密码派生，不落盘，改密码即全部失效）。登录后的写操作不用再填令牌，仍然要过同源检查。脚本和其他 Agent 不用 cookie，带 `Authorization: Bearer <写入令牌>` 读写。同一来源 5 分钟内输错 8 次会被暂时拒绝；所有来源合计输错太多时只放慢应答，不会把别人锁在外面。实时连接（`/api/stream`）在登录失效后自动断开 |
+| `POST /api/interventions/session` | 给某个执行器开一个新会话：在 `chat/` 下写一张 `dispatch: queued` 的卡，从 `V2_REPAIR_BASE` 开独立 worktree；卡片的 `repo:` 取 `V2_REPAIR_REPO`（不设时取 `V2_REPO_DIR`），不看 `V2_REPO_HOST_DIR`。需要同时开启指派修复 |
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `V2_INTERVENTION_MODE` | `readonly`（默认）、`demo` 或 `enabled`；后两者都必须同时显式设置 `V2_BOARD_DIR` |
+| `V2_INTERVENTION_TOKEN` | `enabled` 模式必填，请求用 `Authorization: Bearer` 携带；不写进卡片和日志 |
+| `V2_BOARD_PASSWORD` | 看板的登录密码。不配就用 `V2_INTERVENTION_TOKEN` 当密码；两个都没有（只读、演示实例）不要求登录。`enabled` 模式下它同时是写入凭据：用它登录的浏览器不带令牌就能回答、指派、留言、停止，要像令牌一样保管 |
+| `V2_BOARD_LOGIN` | 设为 `0` 关掉登录，回到「谁都能看、写操作填令牌」 |
+| `V2_REPAIR_ENABLED=1` | 在 `enabled` 模式下另外开启指派修复 |
+| `V2_REPAIR_BASE` | 不挂原卡的工作从哪个分支开 worktree，比如线上部署所在的分支。两种情况用它：验收项没有指向看板上存在的任务卡（没写「卡：」，或写的卡号在看板上找不到）时的修复，以及「Agent 对话」页开的新会话。不设就不能指派这类验收项，也不能开新会话；只在 `enabled` 模式生效 |
+| `V2_REPAIR_REPO` | 上面这两类不挂原卡的卡（修复卡、新会话卡）登记的仓库路径，写 dispatcher 所在机器上的绝对路径；不设时取 `V2_REPO_DIR`。基于原卡的修复不用它 |
+| `V2_REPO_HOST_DIR` | 看板跑在容器里、且仓库在容器里的挂载路径和宿主不一样时设置：`V2_REPO_DIR` 对应的宿主绝对路径。基于原卡的修复在原卡没登记 `repo:` 时用它；不设时取 `V2_REPO_DIR` |
+| `V2_BROWSER_EXECUTORS` | 逗号分隔的执行器名；只有列在这里的才标「浏览器验收已确认」，其余标「未确认」 |
+| `V2_INTERVENTION_TRUST_PROXY_HEADERS=1` | 同源校验改用 `X-Forwarded-Host` / `X-Forwarded-Proto`。经反向代理访问时不设它，写入请求会因来源与 Host 不一致被 403 拒绝；只在看板只能经由可信反代到达时开启 |
+
+容器部署时这些变量不会自动进入容器：`docker-compose.yml` 没有转发它们，需要在 compose 的 `environment` 里逐个声明，否则写入保持 `readonly`、执行器列表为空。`DISPATCH_CONFIG` 要填容器内能读到的路径，并把该文件挂载进去。
+
+- 请求都校验同源、JSON 类型和大小；回答和指派都带卡片（及报告）的 SHA-256 版本，内容变了就拒绝并提示刷新。
+- 修复卡的报错文字和截图由服务端从验收报告里读，不采信浏览器传来的内容；同一验收项重复指派只会有一张卡。
+- 执行器列表取自 `DISPATCH_CONFIG` 里 `executors` 的键名，且该配置的 `board` 必须就是本看板目录；命令和配置内容不外传。
+- 修复卡写 `dispatch: queued`，带独立分支 `d/repair-*`，以原卡分支为基线；dispatcher 有空槽位时为它建独立 worktree。原卡需要登记分支，仓库取原卡的 `repo`；原卡没登记时取 `V2_REPO_HOST_DIR`，再没有就取 `V2_REPO_DIR`（`V2_REPAIR_REPO` 只管不挂原卡的卡）。
+- 「验收报告」页和任务卡的「验收」页签都能指派。报告里写了「卡：」的验收项基于那张卡（写了多张时在表单里选）；没写、或写的卡号在看板上找不到的验收项不挂原卡，修复卡以 `V2_REPAIR_BASE` 为基线、仓库取 `V2_REPAIR_REPO`，正文注明需要 Agent 自己定位代码（找不到的卡号会原样写进去）。验收项写了看板上存在的卡（按卡的 id 或「批次/文件名」认）时，不能绕过那张卡指派。
+- 指派时勾选了浏览器验收，修复卡正文才带云浏览器验收步骤（`scripts/cloud-browser/run.sh`，真实接口或 `--fixture`）和回收沙盒的要求；没勾选时只写自动化测试要求。修复后的验收报告在「卡：」一行同时写修复卡和原卡编号，就会显示在原卡的验收页签里。
+- `demo` 模式不要求令牌，所以有两道限制：数据目录必须带标记文件，并且只改写 front matter 里标了 `demo: true` 的卡片，其余卡片一律拒绝。`python3 scripts/setup_intervention_demo.py` 生成合成卡片、一份合成验收报告和截图；演示里的修复卡是 `held` 状态，不会被执行。
 
 ## 验证
 
